@@ -1,0 +1,224 @@
+/**
+ * RoadGenerator.js — Generate road surface meshes from OSM data
+ */
+
+import * as THREE from 'three';
+import { ROAD_WIDTHS, ROAD_Y_OFFSET } from '../config.js';
+import { latLngToMeters } from '../data/GeoUtils.js';
+
+/**
+ * Generate merged road mesh from OSM way elements
+ * 
+ * @param {object[]} roads - OSM way elements with highway tag
+ * @param {number} chunkWorldX
+ * @param {number} chunkWorldZ
+ * @param {number} originLat
+ * @param {number} originLng
+ * @returns {THREE.Mesh | null}
+ */
+export function generateRoads(roads, chunkWorldX, chunkWorldZ, originLat, originLng) {
+  const geometries = [];
+
+  for (const road of roads) {
+    if (!road.geometry || road.geometry.length < 2) continue;
+
+    const highwayType = road.tags?.highway || 'residential';
+    const width = ROAD_WIDTHS[highwayType] ?? 5;
+
+    // Convert OSM nodes to local positions
+    const points = road.geometry.map(node => {
+      const { x, z } = latLngToMeters(node.lat, node.lon, originLat, originLng);
+      return new THREE.Vector2(x, z);
+    });
+
+    // Generate road strip geometry
+    const roadGeom = createRoadStrip(points, width / 2);
+    if (roadGeom) {
+      geometries.push(roadGeom);
+    }
+
+    // Generate center line for major roads
+    if (['motorway', 'trunk', 'primary', 'secondary', 'tertiary'].includes(highwayType)) {
+      const lineGeom = createRoadStrip(points, 0.15);
+      if (lineGeom) {
+        // We'll handle marking color via vertex colors
+        const colors = new Float32Array(lineGeom.attributes.position.count * 3);
+        for (let i = 0; i < colors.length; i += 3) {
+          colors[i] = 1;     // R
+          colors[i + 1] = 1; // G
+          colors[i + 2] = 0.7; // B — yellowish
+        }
+        lineGeom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        geometries.push(lineGeom);
+      }
+    }
+  }
+
+  if (geometries.length === 0) return null;
+
+  // Merge all road geometries
+  const mergedGeometry = mergeBufferGeometries(geometries);
+  if (!mergedGeometry) return null;
+
+  const material = new THREE.MeshStandardMaterial({
+    color: 0x333338,
+    roughness: 0.85,
+    metalness: 0.05,
+    vertexColors: mergedGeometry.attributes.color ? true : false,
+  });
+
+  const mesh = new THREE.Mesh(mergedGeometry, material);
+  mesh.receiveShadow = true;
+
+  return mesh;
+}
+
+/**
+ * Create a road strip from a polyline
+ * 
+ * @param {THREE.Vector2[]} points - 2D points (x, z)
+ * @param {number} halfWidth 
+ * @returns {THREE.BufferGeometry | null}
+ */
+function createRoadStrip(points, halfWidth) {
+  if (points.length < 2) return null;
+
+  const vertices = [];
+  const indices = [];
+  const uvs = [];
+
+  let totalDist = 0;
+
+  for (let i = 0; i < points.length; i++) {
+    // Compute direction
+    let dir;
+    if (i === 0) {
+      dir = new THREE.Vector2().subVectors(points[1], points[0]).normalize();
+    } else if (i === points.length - 1) {
+      dir = new THREE.Vector2().subVectors(points[i], points[i - 1]).normalize();
+    } else {
+      // Average of previous and next direction for smooth corners
+      const d1 = new THREE.Vector2().subVectors(points[i], points[i - 1]).normalize();
+      const d2 = new THREE.Vector2().subVectors(points[i + 1], points[i]).normalize();
+      dir = new THREE.Vector2().addVectors(d1, d2).normalize();
+    }
+
+    // Perpendicular (normal)
+    const normal = new THREE.Vector2(-dir.y, dir.x);
+
+    // Left and right vertices
+    const left = new THREE.Vector2(
+      points[i].x + normal.x * halfWidth,
+      points[i].y + normal.y * halfWidth
+    );
+    const right = new THREE.Vector2(
+      points[i].x - normal.x * halfWidth,
+      points[i].y - normal.y * halfWidth
+    );
+
+    // Add vertices (y = road height offset)
+    vertices.push(left.x, ROAD_Y_OFFSET, left.y);
+    vertices.push(right.x, ROAD_Y_OFFSET, right.y);
+
+    // UVs
+    if (i > 0) {
+      totalDist += points[i].distanceTo(points[i - 1]);
+    }
+    const u = totalDist / (halfWidth * 4);
+    uvs.push(0, u);
+    uvs.push(1, u);
+
+    // Triangles (connect to previous pair)
+    if (i > 0) {
+      const idx = (i - 1) * 2;
+      indices.push(idx, idx + 1, idx + 2);
+      indices.push(idx + 1, idx + 3, idx + 2);
+    }
+  }
+
+  if (vertices.length < 6) return null;
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+
+  return geometry;
+}
+
+/**
+ * Simple geometry merger (without importing BufferGeometryUtils)
+ */
+function mergeBufferGeometries(geometries) {
+  if (geometries.length === 0) return null;
+  if (geometries.length === 1) return geometries[0];
+
+  let totalVertices = 0;
+  let totalIndices = 0;
+  let hasColor = false;
+
+  for (const geom of geometries) {
+    totalVertices += geom.attributes.position.count;
+    totalIndices += geom.index ? geom.index.count : 0;
+    if (geom.attributes.color) hasColor = true;
+  }
+
+  const positions = new Float32Array(totalVertices * 3);
+  const normals = new Float32Array(totalVertices * 3);
+  const colors = hasColor ? new Float32Array(totalVertices * 3) : null;
+  const indices = new Uint32Array(totalIndices);
+
+  let vertexOffset = 0;
+  let indexOffset = 0;
+  let vertexCount = 0;
+
+  for (const geom of geometries) {
+    // Copy positions
+    const posAttr = geom.attributes.position;
+    for (let i = 0; i < posAttr.count * 3; i++) {
+      positions[vertexOffset * 3 + i] = posAttr.array[i];
+    }
+
+    // Copy normals
+    if (geom.attributes.normal) {
+      for (let i = 0; i < posAttr.count * 3; i++) {
+        normals[vertexOffset * 3 + i] = geom.attributes.normal.array[i];
+      }
+    }
+
+    // Copy colors
+    if (colors && geom.attributes.color) {
+      for (let i = 0; i < posAttr.count * 3; i++) {
+        colors[vertexOffset * 3 + i] = geom.attributes.color.array[i];
+      }
+    } else if (colors) {
+      // Default color: dark gray (road surface)
+      for (let i = 0; i < posAttr.count; i++) {
+        colors[(vertexOffset + i) * 3] = 0.2;
+        colors[(vertexOffset + i) * 3 + 1] = 0.2;
+        colors[(vertexOffset + i) * 3 + 2] = 0.22;
+      }
+    }
+
+    // Copy indices with offset
+    if (geom.index) {
+      for (let i = 0; i < geom.index.count; i++) {
+        indices[indexOffset + i] = geom.index.array[i] + vertexOffset;
+      }
+      indexOffset += geom.index.count;
+    }
+
+    vertexOffset += posAttr.count;
+  }
+
+  const merged = new THREE.BufferGeometry();
+  merged.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  merged.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  if (colors) {
+    merged.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  }
+  merged.setIndex(new THREE.BufferAttribute(indices, 1));
+
+  return merged;
+}

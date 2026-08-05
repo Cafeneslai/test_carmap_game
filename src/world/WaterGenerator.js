@@ -1,0 +1,162 @@
+/**
+ * WaterGenerator.js — Generate water surface meshes from OSM data
+ */
+
+import * as THREE from 'three';
+import { latLngToMeters } from '../data/GeoUtils.js';
+
+/**
+ * Generate water surface from OSM water data
+ * 
+ * @param {object[]} waterElements - OSM elements with water/waterway tag
+ * @param {number} chunkWorldX
+ * @param {number} chunkWorldZ
+ * @param {number} originLat
+ * @param {number} originLng
+ * @returns {THREE.Mesh | null}
+ */
+export function generateWater(waterElements, chunkWorldX, chunkWorldZ, originLat, originLng) {
+  const geometries = [];
+
+  for (const element of waterElements) {
+    if (!element.geometry || element.geometry.length < 3) continue;
+
+    // Convert coordinates
+    const points = element.geometry.map(node => {
+      const { x, z } = latLngToMeters(node.lat, node.lon, originLat, originLng);
+      return new THREE.Vector2(x, z);
+    });
+
+    // For waterways (rivers/streams), create a strip
+    if (element.tags?.waterway) {
+      const width = getWaterwayWidth(element.tags.waterway);
+      const strip = createWaterStrip(points, width / 2);
+      if (strip) geometries.push(strip);
+      continue;
+    }
+
+    // For water bodies (lakes, ponds), create a filled polygon
+    if (points.length >= 3) {
+      try {
+        const shape = new THREE.Shape();
+        shape.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) {
+          shape.lineTo(points[i].x, points[i].y);
+        }
+
+        const geometry = new THREE.ShapeGeometry(shape);
+        geometry.rotateX(-Math.PI / 2);
+        // Raise slightly above terrain
+        const positions = geometry.attributes.position;
+        for (let i = 0; i < positions.count; i++) {
+          positions.setY(i, 0.02);
+        }
+        geometries.push(geometry);
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  if (geometries.length === 0) return null;
+
+  // Merge
+  const merged = mergeSimple(geometries);
+  if (!merged) return null;
+
+  const material = new THREE.MeshStandardMaterial({
+    color: 0x2288bb,
+    transparent: true,
+    opacity: 0.7,
+    roughness: 0.1,
+    metalness: 0.3,
+    side: THREE.DoubleSide,
+  });
+
+  const mesh = new THREE.Mesh(merged, material);
+  mesh.receiveShadow = true;
+
+  return mesh;
+}
+
+function getWaterwayWidth(type) {
+  switch (type) {
+    case 'river': return 15;
+    case 'canal': return 8;
+    case 'stream': return 3;
+    case 'drain': return 2;
+    default: return 5;
+  }
+}
+
+function createWaterStrip(points, halfWidth) {
+  if (points.length < 2) return null;
+
+  const vertices = [];
+  const indices = [];
+
+  for (let i = 0; i < points.length; i++) {
+    let dir;
+    if (i === 0) {
+      dir = new THREE.Vector2().subVectors(points[1], points[0]).normalize();
+    } else if (i === points.length - 1) {
+      dir = new THREE.Vector2().subVectors(points[i], points[i - 1]).normalize();
+    } else {
+      const d1 = new THREE.Vector2().subVectors(points[i], points[i - 1]).normalize();
+      const d2 = new THREE.Vector2().subVectors(points[i + 1], points[i]).normalize();
+      dir = new THREE.Vector2().addVectors(d1, d2).normalize();
+    }
+
+    const normal = new THREE.Vector2(-dir.y, dir.x);
+
+    vertices.push(
+      points[i].x + normal.x * halfWidth, 0.02, points[i].y + normal.y * halfWidth,
+      points[i].x - normal.x * halfWidth, 0.02, points[i].y - normal.y * halfWidth
+    );
+
+    if (i > 0) {
+      const idx = (i - 1) * 2;
+      indices.push(idx, idx + 1, idx + 2);
+      indices.push(idx + 1, idx + 3, idx + 2);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function mergeSimple(geometries) {
+  if (geometries.length === 0) return null;
+  if (geometries.length === 1) return geometries[0];
+
+  let totalVerts = 0;
+  let totalIndices = 0;
+  for (const g of geometries) {
+    totalVerts += g.attributes.position.count;
+    totalIndices += g.index ? g.index.count : 0;
+  }
+
+  const positions = new Float32Array(totalVerts * 3);
+  const normals = new Float32Array(totalVerts * 3);
+  const indices = new Uint32Array(totalIndices);
+  let vo = 0, io = 0;
+
+  for (const g of geometries) {
+    positions.set(g.attributes.position.array, vo * 3);
+    if (g.attributes.normal) normals.set(g.attributes.normal.array, vo * 3);
+    if (g.index) {
+      for (let i = 0; i < g.index.count; i++) indices[io + i] = g.index.array[i] + vo;
+      io += g.index.count;
+    }
+    vo += g.attributes.position.count;
+  }
+
+  const merged = new THREE.BufferGeometry();
+  merged.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  merged.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  if (totalIndices > 0) merged.setIndex(new THREE.BufferAttribute(indices, 1));
+  return merged;
+}

@@ -1,0 +1,19 @@
+{
+  "name": "car-gameworld",
+  "version": "1.0.0",
+  "description": "Real-Time World Generation Driving Game using OpenStreetMap",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "cannon-es": "^0.20.0",
+    "leaflet": "^1.9.4",
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}

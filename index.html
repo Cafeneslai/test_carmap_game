@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="เกมขับรถ 3D ที่สร้างโลกจากข้อมูลจริงของ OpenStreetMap แบบ Real-Time" />
+  <title>Car GameWorld — Real-Time Driving</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Noto+Sans+Thai:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/src/styles/index.css" />
+</head>
+<body>
+  <!-- 3D Canvas -->
+  <canvas id="game-canvas"></canvas>
+
+  <!-- Location Picker Screen -->
+  <div id="location-picker" class="screen active">
+    <div class="picker-container">
+      <div class="picker-header">
+        <h1 class="game-title">
+          <span class="title-icon">🌍</span>
+          <span>Car GameWorld</span>
+        </h1>
+        <p class="game-subtitle">เลือกสถานที่ใดก็ได้บนโลก แล้วออกขับรถสำรวจ</p>
+      </div>
+
+      <div class="search-section">
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input
+            type="text"
+            id="location-search"
+            placeholder="ค้นหาสถานที่... เช่น Bangsaen, Tokyo, Paris"
+            autocomplete="off"
+          />
+          <button id="search-btn" class="btn-search">ค้นหา</button>
+        </div>
+        <div id="search-results" class="search-results hidden"></div>
+      </div>
+
+      <div class="map-section">
+        <h2 class="section-title">หรือเลือกจากแผนที่ (จิ้มเพื่อปักหมุด)</h2>
+        <div id="interactive-map"></div>
+      </div>
+
+      <div class="presets-section">
+        <h2 class="section-title">สถานที่แนะนำ</h2>
+        <div class="preset-grid" id="preset-grid">
+          <!-- Populated by LocationPicker.js -->
+        </div>
+      </div>
+
+      <div class="selected-location hidden" id="selected-location">
+        <div class="location-info">
+          <span class="location-pin">📍</span>
+          <span id="location-name">—</span>
+        </div>
+        <button id="start-btn" class="btn-start">
+          <span>🚗</span> Start Driving
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading Screen -->
+  <div id="loading-screen" class="screen">
+    <div class="loading-container">
+      <div class="loading-spinner"></div>
+      <p id="loading-text" class="loading-text">กำลังเตรียมโลก...</p>
+      <div class="progress-bar-track">
+        <div id="progress-bar" class="progress-bar-fill"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- HUD Overlay -->
+  <div id="hud" class="hud hidden">
+    <div class="hud-top-left">
+      <div id="hud-location" class="hud-location">📍 —</div>
+    </div>
+    <div class="hud-top-right">
+      <div id="hud-fps" class="hud-fps">— FPS</div>
+    </div>
+    <div class="hud-bottom-left">
+      <div class="controls-hint">
+        <div class="key-row"><kbd>W</kbd> เร่ง</div>
+        <div class="key-row"><kbd>S</kbd> เบรก</div>
+        <div class="key-row"><kbd>A</kbd><kbd>D</kbd> เลี้ยว</div>
+        <div class="key-row"><kbd>Space</kbd> เบรคมือ</div>
+        <div class="key-row"><kbd>C</kbd> เปลี่ยนมุมกล้อง</div>
+        <div class="key-row"><kbd>R</kbd> รีเซ็ตรถ</div>
+        <div class="key-row"><kbd>ESC</kbd> ตั้งค่า</div>
+      </div>
+    </div>
+    <div class="hud-bottom-right">
+      <div class="speedometer" id="speedometer">
+        <svg viewBox="0 0 200 200" class="speed-gauge">
+          <circle cx="100" cy="100" r="90" class="gauge-bg" />
+          <circle cx="100" cy="100" r="90" class="gauge-fill" id="gauge-fill" />
+        </svg>
+        <div class="speed-value">
+          <span id="speed-number">0</span>
+          <span class="speed-unit">km/h</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Panel -->
+  <div id="settings-panel" class="settings-panel hidden">
+    <div class="settings-content">
+      <h2>⚙️ ตั้งค่า</h2>
+      <div class="setting-row">
+        <label>ระยะมองเห็น</label>
+        <input type="range" id="setting-view-distance" min="1" max="5" value="3" />
+        <span id="view-distance-val">3</span>
+      </div>
+      <div class="setting-row">
+        <label>คุณภาพกราฟิก</label>
+        <select id="setting-quality">
+          <option value="low">ต่ำ</option>
+          <option value="medium" selected>กลาง</option>
+          <option value="high">สูง</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <label>เงา</label>
+        <input type="checkbox" id="setting-shadows" checked />
+      </div>
+      <div class="setting-row">
+        <label>ต้นไม้</label>
+        <input type="checkbox" id="setting-trees" checked />
+      </div>
+      <div class="setting-row actions">
+        <button id="btn-reset-location" class="btn-secondary">🔄 เปลี่ยนสถานที่</button>
+        <button id="btn-close-settings" class="btn-primary">กลับเข้าเกม</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
