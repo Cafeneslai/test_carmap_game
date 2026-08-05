@@ -80,19 +80,20 @@ export async function fetchChunkData(bbox) {
     for (const element of data.elements) {
       if (!element.tags) continue;
 
-    if (element.tags.highway) {
-      roads.push(element);
-    } else if (element.tags.building) {
-      buildings.push(element);
-    } else if (element.tags.natural === 'water' || element.tags.waterway) {
-      water.push(element);
-    } else if (
-      element.tags.landuse === 'forest' ||
-      element.tags.landuse === 'grass' ||
-      element.tags.leisure === 'park' ||
-      element.tags.leisure === 'garden'
-    ) {
-      greenery.push(element);
+      if (element.tags.highway) {
+        roads.push(element);
+      } else if (element.tags.building) {
+        buildings.push(element);
+      } else if (element.tags.natural === 'water' || element.tags.waterway) {
+        water.push(element);
+      } else if (
+        element.tags.landuse === 'forest' ||
+        element.tags.landuse === 'grass' ||
+        element.tags.leisure === 'park' ||
+        element.tags.leisure === 'garden'
+      ) {
+        greenery.push(element);
+      }
     }
   }
 
