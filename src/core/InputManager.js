@@ -18,18 +18,18 @@ export class InputManager {
   }
 
   _onKeyDown(e) {
-    const key = e.key.toLowerCase();
-    if (!this.keysDown.has(key)) {
-      this.keysJustPressed.add(key);
+    const code = e.code.toLowerCase();
+    if (!this.keysDown.has(code)) {
+      this.keysJustPressed.add(code);
     }
-    this.keysDown.add(key);
+    this.keysDown.add(code);
 
     // Prevent space scrolling
-    if (e.key === ' ') e.preventDefault();
+    if (e.code === 'Space') e.preventDefault();
   }
 
   _onKeyUp(e) {
-    this.keysDown.delete(e.key.toLowerCase());
+    this.keysDown.delete(e.code.toLowerCase());
   }
 
   /**
@@ -55,37 +55,37 @@ export class InputManager {
 
   /** Forward/accelerate */
   get forward() {
-    return this.isDown('w') || this.isDown('arrowup');
+    return this.isDown('keyw') || this.isDown('arrowup');
   }
 
   /** Backward/brake */
   get backward() {
-    return this.isDown('s') || this.isDown('arrowdown');
+    return this.isDown('keys') || this.isDown('arrowdown');
   }
 
   /** Steer left */
   get left() {
-    return this.isDown('a') || this.isDown('arrowleft');
+    return this.isDown('keya') || this.isDown('arrowleft');
   }
 
   /** Steer right */
   get right() {
-    return this.isDown('d') || this.isDown('arrowright');
+    return this.isDown('keyd') || this.isDown('arrowright');
   }
 
   /** Handbrake */
   get handbrake() {
-    return this.isDown(' ');
+    return this.isDown('space');
   }
 
   /** Reset car */
   get reset() {
-    return this.justPressed('r');
+    return this.justPressed('keyr');
   }
 
   /** Toggle camera */
   get toggleCamera() {
-    return this.justPressed('c');
+    return this.justPressed('keyc');
   }
 
   /** Toggle settings */

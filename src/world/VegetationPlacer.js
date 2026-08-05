@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { TREE_DENSITY, MAX_TREES_PER_CHUNK } from '../config.js';
 import { latLngToMeters } from '../data/GeoUtils.js';
+import { getElevationAt } from './ElevationUtils.js';
 
 // Shared geometries (created once, reused)
 let trunkGeometry = null;
@@ -42,13 +43,14 @@ function ensureSharedAssets() {
  * Place trees in greenery areas
  * 
  * @param {object[]} greeneryElements - OSM elements (park, forest, etc.)
+ * @param {number[][]} elevationData - Chunk elevation grid
  * @param {number} chunkWorldX
  * @param {number} chunkWorldZ
  * @param {number} originLat
  * @param {number} originLng
  * @returns {THREE.Group | null}
  */
-export function placeVegetation(greeneryElements, chunkWorldX, chunkWorldZ, originLat, originLng) {
+export function placeVegetation(greeneryElements, elevationData, chunkWorldX, chunkWorldZ, originLat, originLng) {
   ensureSharedAssets();
 
   const treePositions = [];
@@ -129,7 +131,7 @@ export function placeVegetation(greeneryElements, chunkWorldX, chunkWorldZ, orig
     matrix.identity();
     matrix.makeRotationY(rotation);
     matrix.scale(new THREE.Vector3(scale, scale, scale));
-    matrix.setPosition(x, 0, z);
+    matrix.setPosition(x, getElevationAt(x - chunkWorldX, z - chunkWorldZ, elevationData), z);
 
     trunkInstanced.setMatrixAt(i, matrix);
     foliageInstanced.setMatrixAt(i, matrix);

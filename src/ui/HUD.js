@@ -2,6 +2,8 @@
  * HUD.js — In-game heads-up display
  */
 
+import { Minimap } from './Minimap.js';
+
 export class HUD {
   constructor() {
     this.el = document.getElementById('hud');
@@ -12,6 +14,9 @@ export class HUD {
 
     // Gauge circumference for stroke-dashoffset calculation
     this.gaugeCircumference = 2 * Math.PI * 90; // r=90
+
+    // Minimap
+    this.minimap = new Minimap('minimap');
   }
 
   /**
@@ -56,5 +61,14 @@ export class HUD {
    */
   updateFps(fps) {
     this.fpsEl.textContent = `${fps} FPS`;
+  }
+
+  /**
+   * Update minimap
+   */
+  updateMinimap(lat, lng, heading) {
+    if (this.minimap) {
+      this.minimap.update(lat, lng, heading);
+    }
   }
 }

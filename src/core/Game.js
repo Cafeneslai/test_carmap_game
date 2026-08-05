@@ -14,6 +14,7 @@ import { LocationPicker } from '../ui/LocationPicker.js';
 import { LoadingScreen } from '../ui/LoadingScreen.js';
 import { HUD } from '../ui/HUD.js';
 import { SettingsPanel } from '../ui/SettingsPanel.js';
+import { metersToLatLng } from '../data/GeoUtils.js';
 
 export class Game {
   /**
@@ -29,7 +30,7 @@ export class Game {
     // ---- Three.js ----
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x87ceeb); // sky blue
-    this.scene.fog = new THREE.Fog(0x87ceeb, 400, 1200);
+    this.scene.fog = new THREE.Fog(0x87ceeb, 200, 700);
 
     this.camera = new THREE.PerspectiveCamera(
       CAMERA_FOV,
@@ -254,6 +255,15 @@ export class Game {
       // Move sun with car
       this.sunLight.position.set(pos.x + 100, 150, pos.z + 100);
       this.sunLight.target.position.set(pos.x, 0, pos.z);
+
+      // Update Minimap
+      const { lat, lng } = metersToLatLng(
+        pos.x,
+        pos.z,
+        this.chunkManager.worldBuilder.originLat,
+        this.chunkManager.worldBuilder.originLng
+      );
+      this.hud.updateMinimap(lat, lng, this.carController.getHeading());
     }
   }
 

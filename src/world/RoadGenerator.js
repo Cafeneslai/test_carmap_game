@@ -5,18 +5,20 @@
 import * as THREE from 'three';
 import { ROAD_WIDTHS, ROAD_Y_OFFSET } from '../config.js';
 import { latLngToMeters } from '../data/GeoUtils.js';
+import { getElevationAt } from './ElevationUtils.js';
 
 /**
  * Generate merged road mesh from OSM way elements
  * 
  * @param {object[]} roads - OSM way elements with highway tag
+ * @param {number[][]} elevationData - Chunk elevation grid
  * @param {number} chunkWorldX
  * @param {number} chunkWorldZ
  * @param {number} originLat
  * @param {number} originLng
  * @returns {THREE.Mesh | null}
  */
-export function generateRoads(roads, chunkWorldX, chunkWorldZ, originLat, originLng) {
+export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, originLat, originLng) {
   const geometries = [];
 
   for (const road of roads) {
@@ -32,14 +34,14 @@ export function generateRoads(roads, chunkWorldX, chunkWorldZ, originLat, origin
     });
 
     // Generate road strip geometry
-    const roadGeom = createRoadStrip(points, width / 2);
+    const roadGeom = createRoadStrip(points, width / 2, elevationData, chunkWorldX, chunkWorldZ);
     if (roadGeom) {
       geometries.push(roadGeom);
     }
 
     // Generate center line for major roads
     if (['motorway', 'trunk', 'primary', 'secondary', 'tertiary'].includes(highwayType)) {
-      const lineGeom = createRoadStrip(points, 0.15);
+      const lineGeom = createRoadStrip(points, 0.15, elevationData, chunkWorldX, chunkWorldZ);
       if (lineGeom) {
         // We'll handle marking color via vertex colors
         const colors = new Float32Array(lineGeom.attributes.position.count * 3);
@@ -78,9 +80,12 @@ export function generateRoads(roads, chunkWorldX, chunkWorldZ, originLat, origin
  * 
  * @param {THREE.Vector2[]} points - 2D points (x, z)
  * @param {number} halfWidth 
+ * @param {number[][]} elevationData
+ * @param {number} chunkWorldX
+ * @param {number} chunkWorldZ
  * @returns {THREE.BufferGeometry | null}
  */
-function createRoadStrip(points, halfWidth) {
+function createRoadStrip(points, halfWidth, elevationData, chunkWorldX, chunkWorldZ) {
   if (points.length < 2) return null;
 
   const vertices = [];
@@ -116,9 +121,12 @@ function createRoadStrip(points, halfWidth) {
       points[i].y - normal.y * halfWidth
     );
 
-    // Add vertices (y = road height offset)
-    vertices.push(left.x, ROAD_Y_OFFSET, left.y);
-    vertices.push(right.x, ROAD_Y_OFFSET, right.y);
+    // Add vertices (y = terrain elevation + offset)
+    const yLeft = getElevationAt(left.x - chunkWorldX, left.y - chunkWorldZ, elevationData) + ROAD_Y_OFFSET;
+    const yRight = getElevationAt(right.x - chunkWorldX, right.y - chunkWorldZ, elevationData) + ROAD_Y_OFFSET;
+    
+    vertices.push(left.x, yLeft, left.y);
+    vertices.push(right.x, yRight, right.y);
 
     // UVs
     if (i > 0) {

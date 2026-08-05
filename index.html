@@ -94,16 +94,19 @@
       </div>
     </div>
     <div class="hud-bottom-right">
-      <div class="speedometer" id="speedometer">
-        <svg viewBox="0 0 200 200" class="speed-gauge">
-          <circle cx="100" cy="100" r="90" class="gauge-bg" />
-          <circle cx="100" cy="100" r="90" class="gauge-fill" id="gauge-fill" />
+      <div class="speedometer">
+        <svg class="gauge" viewBox="0 0 200 200">
+          <circle class="gauge-bg" cx="100" cy="100" r="90" />
+          <circle class="gauge-fill" id="gauge-fill" cx="100" cy="100" r="90" />
         </svg>
-        <div class="speed-value">
+        <div class="speed-text">
           <span id="speed-number">0</span>
-          <span class="speed-unit">km/h</span>
+          <span class="speed-unit">KM/H</span>
         </div>
       </div>
+    </div>
+    <div class="hud-minimap-container">
+      <div id="minimap" class="minimap"></div>
     </div>
   </div>
 

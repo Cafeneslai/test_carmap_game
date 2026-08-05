@@ -98,9 +98,9 @@ export class CarController {
     // Engine force
     let engineForce = 0;
     if (input.forward) {
-      engineForce = CAR_MAX_FORCE;
+      engineForce = -CAR_MAX_FORCE;
     } else if (input.backward) {
-      engineForce = -CAR_MAX_FORCE * 0.6;
+      engineForce = CAR_MAX_FORCE * 0.6;
     }
 
     // Braking
@@ -113,8 +113,8 @@ export class CarController {
 
     // Steering
     let targetSteer = 0;
-    if (input.left) targetSteer = CAR_MAX_STEER;
-    if (input.right) targetSteer = -CAR_MAX_STEER;
+    if (input.left) targetSteer = -CAR_MAX_STEER;
+    if (input.right) targetSteer = CAR_MAX_STEER;
 
     // Smooth steering
     this.currentSteer += (targetSteer - this.currentSteer) * 0.15;

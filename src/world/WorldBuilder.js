@@ -93,6 +93,7 @@ export class WorldBuilder {
     if (osmData && osmData.roads.length > 0) {
       const roadMesh = generateRoads(
         osmData.roads,
+        elevationData,
         chunk.worldX,
         chunk.worldZ,
         this.originLat,
@@ -107,6 +108,7 @@ export class WorldBuilder {
     if (osmData && osmData.buildings.length > 0) {
       const buildingMesh = generateBuildings(
         osmData.buildings,
+        elevationData,
         chunk.worldX,
         chunk.worldZ,
         this.originLat,
@@ -135,6 +137,7 @@ export class WorldBuilder {
     if (osmData && osmData.greenery.length > 0) {
       const vegGroup = placeVegetation(
         osmData.greenery,
+        elevationData,
         chunk.worldX,
         chunk.worldZ,
         this.originLat,

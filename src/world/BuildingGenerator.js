@@ -5,18 +5,20 @@
 import * as THREE from 'three';
 import { DEFAULT_BUILDING_HEIGHT, METERS_PER_FLOOR, BUILDING_COLORS } from '../config.js';
 import { latLngToMeters } from '../data/GeoUtils.js';
+import { getElevationAt } from './ElevationUtils.js';
 
 /**
  * Generate merged building mesh from OSM building elements
  * 
  * @param {object[]} buildings - OSM way/relation elements with building tag
+ * @param {number[][]} elevationData - Chunk elevation grid
  * @param {number} chunkWorldX
  * @param {number} chunkWorldZ
  * @param {number} originLat
  * @param {number} originLng
  * @returns {THREE.Group | null}
  */
-export function generateBuildings(buildings, chunkWorldX, chunkWorldZ, originLat, originLng) {
+export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWorldZ, originLat, originLng) {
   const group = new THREE.Group();
   const geometries = [];
   const colorArrays = [];
@@ -68,6 +70,20 @@ export function generateBuildings(buildings, chunkWorldX, chunkWorldZ, originLat
 
       // Rotate to make extrusion go up (Y axis)
       geometry.rotateX(-Math.PI / 2);
+
+      // Calculate average local X, Z for elevation sampling
+      let avgX = 0, avgZ = 0;
+      for (const p of shapePoints) {
+        avgX += p.x;
+        avgZ += p.y;
+      }
+      avgX /= shapePoints.length;
+      avgZ /= shapePoints.length;
+      
+      const baseY = getElevationAt(avgX - chunkWorldX, avgZ - chunkWorldZ, elevationData);
+      
+      // Translate to terrain height (sink it slightly to avoid gaps)
+      geometry.translate(0, baseY - 0.5, 0);
 
       // Pick a color for this building
       const colorHex = BUILDING_COLORS[Math.floor(Math.random() * BUILDING_COLORS.length)];

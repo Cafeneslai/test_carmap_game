@@ -69,9 +69,12 @@ export function generateTerrain(elevationGrid, chunkWorldX, chunkWorldZ, originL
       color.lerpColors(colorMid, colorHigh, (t - 0.5) * 2);
     }
 
-    colors[i * 3] = color.r;
-    colors[i * 3 + 1] = color.g;
-    colors[i * 3 + 2] = color.b;
+    // Add slight random noise to break up flat colors
+    const noise = (Math.random() - 0.5) * 0.04;
+    
+    colors[i * 3] = color.r + noise;
+    colors[i * 3 + 1] = color.g + noise;
+    colors[i * 3 + 2] = color.b + noise;
   }
 
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
