@@ -1,29 +1,199 @@
 /**
- * OSMFetcher.js — Fetch road, building, water, greenery data with multi-endpoint fallback & procedural offline mode
+ * OSMFetcher.js — High-performance OpenStreetMap fetcher using direct OSM API & Regional Prefetching
  */
 
 import { OVERPASS_ENDPOINTS, OSM_REQUEST_INTERVAL } from '../config.js';
-import { bboxToOverpass } from './GeoUtils.js';
+import { bboxToOverpass, getBoundingBox, latLngToMeters } from './GeoUtils.js';
 
 let lastRequestTime = 0;
 let currentEndpointIndex = 0;
 
+// Regional in-memory cache to allow instantaneous chunk generation
+let regionalCache = null;
+
 /**
- * Wait to respect rate limiting
+ * Wait to respect rate limiting if needed
  */
-async function rateLimitWait() {
+async function rateLimitWait(interval = OSM_REQUEST_INTERVAL) {
   const now = Date.now();
   const elapsed = now - lastRequestTime;
-  if (elapsed < OSM_REQUEST_INTERVAL) {
-    await new Promise((r) => setTimeout(r, OSM_REQUEST_INTERVAL - elapsed));
+  if (elapsed < interval) {
+    await new Promise((r) => setTimeout(r, interval - elapsed));
   }
   lastRequestTime = Date.now();
 }
 
 /**
- * Send Overpass QL query with rotation and failover across endpoints
- * @param {string} query
- * @returns {Promise<object | null>}
+ * Parse raw OSM XML into structured elements (roads, buildings, water, greenery)
+ * Works in both browser and Node.js environments.
+ */
+function parseOsmXml(xml) {
+  const nodes = new Map();
+  const nodeRegex = /<node id="(\d+)"[^>]*lat="([^"]+)"[^>]*lon="([^"]+)"/g;
+  let match;
+  while ((match = nodeRegex.exec(xml)) !== null) {
+    nodes.set(match[1], { lat: parseFloat(match[2]), lon: parseFloat(match[3]) });
+  }
+
+  const wayRegex = /<way id="(\d+)"[\s\S]*?<\/way>/g;
+  const roads = [];
+  const buildings = [];
+  const water = [];
+  const greenery = [];
+
+  while ((match = wayRegex.exec(xml)) !== null) {
+    const wayXml = match[0];
+    const ndRegex = /<nd ref="(\d+)"\/>/g;
+    const geom = [];
+    let ndMatch;
+    while ((ndMatch = ndRegex.exec(wayXml)) !== null) {
+      const node = nodes.get(ndMatch[1]);
+      if (node) geom.push(node);
+    }
+
+    const tagRegex = /<tag k="([^"]+)" v="([^"]+)"\/>/g;
+    const tags = {};
+    let tagMatch;
+    while ((tagMatch = tagRegex.exec(wayXml)) !== null) {
+      tags[tagMatch[1]] = tagMatch[2];
+    }
+
+    const element = { id: match[1], geometry: geom, tags };
+
+    if (tags.highway && geom.length >= 2) {
+      roads.push(element);
+    } else if (tags.building && geom.length >= 3) {
+      buildings.push(element);
+    } else if ((tags.natural === 'water' || tags.waterway) && geom.length >= 2) {
+      water.push(element);
+    } else if (
+      (tags.landuse === 'forest' ||
+        tags.landuse === 'grass' ||
+        tags.leisure === 'park' ||
+        tags.leisure === 'garden') &&
+      geom.length >= 3
+    ) {
+      greenery.push(element);
+    }
+  }
+
+  return { roads, buildings, water, greenery };
+}
+
+/**
+ * Preload a large regional bounding box (e.g. 600m radius around location) in ONE single request.
+ * Directly hits the official OSM API v0.6 which natively supports CORS and delivers full road/building data in <1s.
+ *
+ * @param {number} originLat
+ * @param {number} originLng
+ * @param {number} radiusMeters
+ */
+export async function preloadRegion(originLat, originLng, radiusMeters = 600) {
+  const bbox = getBoundingBox(originLat, originLng, radiusMeters);
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+
+    const url = `https://api.openstreetmap.org/api/0.6/map?bbox=${bbox.west.toFixed(6)},${bbox.south.toFixed(6)},${bbox.east.toFixed(6)},${bbox.north.toFixed(6)}`;
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+
+    if (response.ok) {
+      const xml = await response.text();
+      const parsed = parseOsmXml(xml);
+
+      if (parsed.roads.length > 0 || parsed.buildings.length > 0) {
+        regionalCache = {
+          originLat,
+          originLng,
+          bbox,
+          ...parsed,
+        };
+        return regionalCache;
+      }
+    }
+  } catch (err) {
+    console.warn('Direct OSM API preload failed, will fallback to per-chunk queries:', err.message);
+  }
+
+  return null;
+}
+
+/**
+ * Find the best road spawn point nearest to (originLat, originLng)
+ * @param {number} originLat
+ * @param {number} originLng
+ * @returns {{ x: number, z: number, heading: number, roadType: string, name: string } | null}
+ */
+export function getBestSpawnPoint(originLat, originLng) {
+  if (!regionalCache || !regionalCache.roads || regionalCache.roads.length === 0) {
+    return null;
+  }
+
+  let minDistance = Infinity;
+  let bestSpawn = null;
+
+  for (const road of regionalCache.roads) {
+    for (let i = 0; i < road.geometry.length - 1; i++) {
+      const p1 = latLngToMeters(road.geometry[i].lat, road.geometry[i].lon, originLat, originLng);
+      const p2 = latLngToMeters(road.geometry[i + 1].lat, road.geometry[i + 1].lon, originLat, originLng);
+
+      const midX = (p1.x + p2.x) / 2;
+      const midZ = (p1.z + p2.z) / 2;
+      const dist = Math.hypot(midX, midZ);
+
+      if (dist < minDistance) {
+        minDistance = dist;
+        const dx = p2.x - p1.x;
+        const dz = p2.z - p1.z;
+        const heading = Math.atan2(dx, dz);
+        bestSpawn = {
+          x: midX,
+          z: midZ,
+          heading,
+          roadType: road.tags.highway,
+          name: road.tags.name || 'ถนน',
+        };
+      }
+    }
+  }
+
+  return bestSpawn;
+}
+
+/**
+ * Filter elements from regional cache that touch or intersect the given chunk bbox
+ */
+function filterFromRegionalCache(bbox) {
+  if (!regionalCache) return null;
+
+  // Check if bbox is within preloaded region
+  const { south: regS, west: regW, north: regN, east: regE } = regionalCache.bbox;
+  if (bbox.south < regS || bbox.north > regN || bbox.west < regW || bbox.east > regE) {
+    return null; // outside preloaded region
+  }
+
+  // Slight padding so road polylines crossing chunk borders don't get cut
+  const padLat = (bbox.north - bbox.south) * 0.15;
+  const padLng = (bbox.east - bbox.west) * 0.15;
+  const s = bbox.south - padLat;
+  const n = bbox.north + padLat;
+  const w = bbox.west - padLng;
+  const e = bbox.east + padLng;
+
+  const inBBox = (node) => node.lat >= s && node.lat <= n && node.lon >= w && node.lon <= e;
+
+  const roads = regionalCache.roads.filter((el) => el.geometry.some(inBBox));
+  const buildings = regionalCache.buildings.filter((el) => el.geometry.some(inBBox));
+  const water = regionalCache.water.filter((el) => el.geometry.some(inBBox));
+  const greenery = regionalCache.greenery.filter((el) => el.geometry.some(inBBox));
+
+  return { roads, buildings, water, greenery };
+}
+
+/**
+ * Send Overpass QL query as fallback
  */
 async function queryOverpass(query) {
   const endpoints = [...OVERPASS_ENDPOINTS];
@@ -33,10 +203,10 @@ async function queryOverpass(query) {
     const endpoint = endpoints[endpointIndex];
 
     try {
-      await rateLimitWait();
+      await rateLimitWait(1000);
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 12000); // 12s timeout
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
 
       const response = await fetch(endpoint, {
         method: 'POST',
@@ -50,13 +220,11 @@ async function queryOverpass(query) {
       clearTimeout(timeoutId);
 
       if (response.ok) {
-        currentEndpointIndex = endpointIndex; // remember working endpoint
+        currentEndpointIndex = endpointIndex;
         return await response.json();
       }
-
-      console.warn(`Overpass endpoint ${endpoint} returned ${response.status}. Trying next...`);
-    } catch (err) {
-      console.warn(`Overpass query to ${endpoint} failed: ${err.message}. Trying next...`);
+    } catch {
+      // try next
     }
   }
 
@@ -64,8 +232,7 @@ async function queryOverpass(query) {
 }
 
 /**
- * Generate synthetic road and building data if all external Overpass servers fail.
- * Ensures the world is never an empty void even if public APIs are down or rate-limited.
+ * Generate synthetic road and building data if all external servers are unreachable.
  */
 function generateProceduralFallback(bbox) {
   const { south, west, north, east } = bbox;
@@ -74,7 +241,6 @@ function generateProceduralFallback(bbox) {
   const latSpan = north - south;
   const lngSpan = east - west;
 
-  // 1. Procedural Roads (a cross intersection)
   const roads = [
     {
       tags: { highway: 'primary' },
@@ -90,30 +256,20 @@ function generateProceduralFallback(bbox) {
         { lat: north, lon: midLng },
       ],
     },
-    {
-      tags: { highway: 'residential' },
-      geometry: [
-        { lat: south + latSpan * 0.25, lon: west },
-        { lat: south + latSpan * 0.25, lon: east },
-      ],
-    },
   ];
 
-  // 2. Procedural Buildings in quadrants
   const buildings = [];
   const buildingOffsets = [
-    [0.15, 0.15],
-    [0.35, 0.15],
-    [0.15, 0.35],
-    [0.65, 0.65],
-    [0.8, 0.65],
-    [0.65, 0.8],
-    [0.15, 0.65],
-    [0.65, 0.15],
+    [0.2, 0.2],
+    [0.35, 0.2],
+    [0.7, 0.7],
+    [0.85, 0.7],
+    [0.2, 0.7],
+    [0.7, 0.2],
   ];
 
-  const bSizeLat = latSpan * 0.08;
-  const bSizeLng = lngSpan * 0.08;
+  const bSizeLat = latSpan * 0.1;
+  const bSizeLng = lngSpan * 0.1;
 
   for (const [oLat, oLng] of buildingOffsets) {
     const bLat = south + latSpan * oLat;
@@ -121,7 +277,7 @@ function generateProceduralFallback(bbox) {
     buildings.push({
       tags: {
         building: 'yes',
-        'building:levels': String(Math.floor(2 + (oLat + oLng) * 5)),
+        'building:levels': String(Math.floor(2 + (oLat + oLng) * 4)),
       },
       geometry: [
         { lat: bLat, lon: bLng },
@@ -133,16 +289,15 @@ function generateProceduralFallback(bbox) {
     });
   }
 
-  // 3. Greenery park in top-left
   const greenery = [
     {
       tags: { leisure: 'park' },
       geometry: [
-        { lat: south + latSpan * 0.6, lon: west + lngSpan * 0.1 },
+        { lat: south + latSpan * 0.55, lon: west + lngSpan * 0.1 },
         { lat: south + latSpan * 0.85, lon: west + lngSpan * 0.1 },
-        { lat: south + latSpan * 0.85, lon: west + lngSpan * 0.35 },
-        { lat: south + latSpan * 0.6, lon: west + lngSpan * 0.35 },
-        { lat: south + latSpan * 0.6, lon: west + lngSpan * 0.1 },
+        { lat: south + latSpan * 0.85, lon: west + lngSpan * 0.4 },
+        { lat: south + latSpan * 0.55, lon: west + lngSpan * 0.4 },
+        { lat: south + latSpan * 0.55, lon: west + lngSpan * 0.1 },
       ],
     },
   ];
@@ -151,84 +306,75 @@ function generateProceduralFallback(bbox) {
 }
 
 /**
- * Fetch all data for a chunk in one combined query with fallback
+ * Fetch all data for a chunk
  * @param {{ south: number, west: number, north: number, east: number }} bbox
  * @returns {Promise<{ roads: object[], buildings: object[], water: object[], greenery: object[] }>}
  */
 export async function fetchChunkData(bbox) {
-  const b = bboxToOverpass(bbox);
+  // 1. Try in-memory preloaded regional cache first (instant 0ms)
+  const cached = filterFromRegionalCache(bbox);
+  if (cached) {
+    // If chunk in city has elements, return them
+    if (cached.roads.length > 0 || cached.buildings.length > 0) {
+      return cached;
+    }
+  }
 
+  // 2. Direct OSM API query for this chunk
+  try {
+    const url = `https://api.openstreetmap.org/api/0.6/map?bbox=${bbox.west.toFixed(6)},${bbox.south.toFixed(6)},${bbox.east.toFixed(6)},${bbox.north.toFixed(6)}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+
+    if (response.ok) {
+      const xml = await response.text();
+      const parsed = parseOsmXml(xml);
+      if (parsed.roads.length > 0 || parsed.buildings.length > 0) {
+        return parsed;
+      }
+    }
+  } catch {
+    // fallback to overpass
+  }
+
+  // 3. Fallback to Overpass API
+  const b = bboxToOverpass(bbox);
   const query = `
-    [out:json][timeout:12];
+    [out:json][timeout:8];
     (
       way["highway"](${b});
       way["building"](${b});
       relation["building"](${b});
       way["natural"="water"](${b});
       way["waterway"](${b});
-      relation["natural"="water"](${b});
       way["landuse"="forest"](${b});
-      way["landuse"="grass"](${b});
       way["leisure"="park"](${b});
-      way["leisure"="garden"](${b});
     );
     out geom;
   `;
 
   const data = await queryOverpass(query);
+  if (data && data.elements && data.elements.length > 0) {
+    const roads = [];
+    const buildings = [];
+    const water = [];
+    const greenery = [];
 
-  if (!data || !data.elements || data.elements.length === 0) {
-    // If Overpass returned nothing or failed, use procedural generation
-    return generateProceduralFallback(bbox);
-  }
+    for (const element of data.elements) {
+      if (!element.tags) continue;
+      if (element.tags.highway) roads.push(element);
+      else if (element.tags.building) buildings.push(element);
+      else if (element.tags.natural === 'water' || element.tags.waterway) water.push(element);
+      else if (element.tags.landuse || element.tags.leisure) greenery.push(element);
+    }
 
-  const roads = [];
-  const buildings = [];
-  const water = [];
-  const greenery = [];
-
-  for (const element of data.elements) {
-    if (!element.tags) continue;
-
-    if (element.tags.highway) {
-      roads.push(element);
-    } else if (element.tags.building) {
-      buildings.push(element);
-    } else if (element.tags.natural === 'water' || element.tags.waterway) {
-      water.push(element);
-    } else if (
-      element.tags.landuse === 'forest' ||
-      element.tags.landuse === 'grass' ||
-      element.tags.leisure === 'park' ||
-      element.tags.leisure === 'garden'
-    ) {
-      greenery.push(element);
+    if (roads.length > 0 || buildings.length > 0) {
+      return { roads, buildings, water, greenery };
     }
   }
 
-  // If real query had no roads or buildings in this area, complement with procedural roads
-  if (roads.length === 0 && buildings.length === 0) {
-    const fallback = generateProceduralFallback(bbox);
-    return fallback;
-  }
-
-  return { roads, buildings, water, greenery };
-}
-
-/**
- * Fetch roads only
- * @param {{ south: number, west: number, north: number, east: number }} bbox
- */
-export async function fetchRoads(bbox) {
-  const data = await fetchChunkData(bbox);
-  return data.roads;
-}
-
-/**
- * Fetch buildings only
- * @param {{ south: number, west: number, north: number, east: number }} bbox
- */
-export async function fetchBuildings(bbox) {
-  const data = await fetchChunkData(bbox);
-  return data.buildings;
+  // 4. Procedural fallback to guarantee roads and buildings exist
+  return generateProceduralFallback(bbox);
 }

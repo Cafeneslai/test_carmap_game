@@ -187,6 +187,21 @@ export class CarController {
   }
 
   /**
+   * Set car spawn position and orientation on road
+   * @param {number} x
+   * @param {number} y
+   * @param {number} z
+   * @param {number} heading - rotation in radians
+   */
+  setSpawnPosition(x, y, z, heading = 0) {
+    this.chassisBody.position.set(x, y, z);
+    this.chassisBody.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), heading);
+    this.chassisBody.velocity.set(0, 0, 0);
+    this.chassisBody.angularVelocity.set(0, 0, 0);
+    this._syncVisuals();
+  }
+
+  /**
    * Get car world position
    * @returns {{ x: number, y: number, z: number }}
    */

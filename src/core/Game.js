@@ -15,6 +15,7 @@ import { LoadingScreen } from '../ui/LoadingScreen.js';
 import { HUD } from '../ui/HUD.js';
 import { SettingsPanel } from '../ui/SettingsPanel.js';
 import { metersToLatLng } from '../data/GeoUtils.js';
+import { preloadRegion, getBestSpawnPoint } from '../data/OSMFetcher.js';
 
 export class Game {
   /**
@@ -130,33 +131,45 @@ export class Game {
     this.loadingScreen.setProgress(5);
 
     try {
-      // 1. Setup chunk manager
-      this.loadingScreen.setText('กำลังเริ่มต้นระบบ Chunk...');
+      // 1. Preload regional OSM map (roads, buildings, greenery in 600m radius in 1 fast query)
+      this.loadingScreen.setText('กำลังดาวน์โหลดข้อมูลถนนและอาคาร...');
       this.loadingScreen.setProgress(10);
+      await preloadRegion(location.lat, location.lng, 600);
+
+      // 2. Setup chunk manager
+      this.loadingScreen.setText('กำลังเริ่มต้นระบบ Chunk...');
+      this.loadingScreen.setProgress(20);
       this.chunkManager = new ChunkManager(this.scene, this.physicsWorld, location.lat, location.lng);
 
-      // 2. Setup car
+      // 3. Setup car
       this.loadingScreen.setText('กำลังสร้างรถ...');
-      this.loadingScreen.setProgress(20);
+      this.loadingScreen.setProgress(30);
       this.carModel = new CarModel(this.scene);
       this.carController = new CarController(this.physicsWorld, this.carModel);
 
-      // 3. Setup camera
+      // 4. Setup camera
       this.cameraController = new CameraController(this.camera, this.carController);
 
-      // 4. Load initial chunks
-      this.loadingScreen.setText('กำลังดึงข้อมูลแผนที่...');
-      this.loadingScreen.setProgress(30);
+      // 5. Load initial chunks (3x3 grid around player)
+      this.loadingScreen.setText('กำลังสร้างโลก 3D...');
+      this.loadingScreen.setProgress(40);
       await this.chunkManager.loadInitialChunks((progress, text) => {
-        this.loadingScreen.setProgress(30 + progress * 60);
+        this.loadingScreen.setProgress(40 + progress * 50);
         if (text) this.loadingScreen.setText(text);
       });
 
-      // 5. Ready!
-      this.loadingScreen.setText('เกือบเสร็จแล้ว!');
+      // 6. Snap car to nearest road automatically
+      const spawn = getBestSpawnPoint(location.lat, location.lng);
+      if (spawn) {
+        this.carController.setSpawnPosition(spawn.x, 2, spawn.z, spawn.heading);
+        this.cameraController.reset();
+      }
+
+      // 7. Ready!
+      this.loadingScreen.setText('พร้อมขับสำรวจ!');
       this.loadingScreen.setProgress(100);
 
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, 400));
 
       this.loadingScreen.hide();
       this.hud.show(location.name);

@@ -104,4 +104,11 @@ export class CameraController {
     this.camera.position.copy(this._currentPos);
     this.camera.lookAt(this._currentLookAt);
   }
+
+  /**
+   * Reset camera to snap immediately to target on next frame
+   */
+  reset() {
+    this._initialized = false;
+  }
 }

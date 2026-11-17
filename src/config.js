@@ -5,8 +5,8 @@
 // ====== World / Chunk ======
 export const CHUNK_SIZE = 200;           // meters per chunk side
 export const VIEW_DISTANCE = 3;          // chunks radius to load
-export const INITIAL_VIEW_DISTANCE = 0;  // load the starting chunk before entering play
-export const MAX_CONCURRENT_LOADS = 2;   // max chunks loading at once
+export const INITIAL_VIEW_DISTANCE = 1;  // load 3x3 grid (9 chunks = 600m) before play so surrounding world is fully visible
+export const MAX_CONCURRENT_LOADS = 4;   // max chunks loading at once
 export const CHUNK_UNLOAD_BUFFER = 1;    // extra chunk buffer before unload
 
 // ====== Terrain ======
