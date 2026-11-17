@@ -18,7 +18,7 @@ import { getElevationAt } from './ElevationUtils.js';
  * @param {number} originLng
  * @returns {THREE.Group | null}
  */
-export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWorldZ, originLat, originLng) {
+export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWorldZ, originLat, originLng, baseElevation = null) {
   const group = new THREE.Group();
   const geometries = [];
   const colorArrays = [];
@@ -80,7 +80,7 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
       avgX /= shapePoints.length;
       avgZ /= shapePoints.length;
       
-      const baseY = getElevationAt(avgX - chunkWorldX, avgZ - chunkWorldZ, elevationData);
+      const baseY = getElevationAt(avgX - chunkWorldX, avgZ - chunkWorldZ, elevationData, baseElevation);
       
       // Translate to terrain height (sink it slightly to avoid gaps)
       geometry.translate(0, baseY - 0.5, 0);

@@ -20,6 +20,7 @@ export class WorldBuilder {
   constructor(originLat, originLng) {
     this.originLat = originLat;
     this.originLng = originLng;
+    this.originBaseElevation = null;
   }
 
   /**
@@ -71,6 +72,15 @@ export class WorldBuilder {
     chunk.osmData = osmData;
     chunk.elevationData = elevationData;
 
+    // Establish a unified base elevation at origin so all chunks align seamlessly
+    if (this.originBaseElevation === null && elevationData && elevationData.length > 0) {
+      const centerRow = Math.floor(elevationData.length / 2);
+      const centerCol = Math.floor(elevationData.length / 2);
+      this.originBaseElevation = elevationData[centerRow]?.[centerCol] ?? 0;
+    }
+
+    const baseElevation = this.originBaseElevation;
+
     // Generate meshes
 
     // 1. Terrain
@@ -79,7 +89,8 @@ export class WorldBuilder {
       chunk.worldX,
       chunk.worldZ,
       this.originLat,
-      this.originLng
+      this.originLng,
+      baseElevation
     );
     if (terrainResult.mesh) {
       chunk.meshGroup.add(terrainResult.mesh);
@@ -97,7 +108,8 @@ export class WorldBuilder {
         chunk.worldX,
         chunk.worldZ,
         this.originLat,
-        this.originLng
+        this.originLng,
+        baseElevation
       );
       if (roadMesh) {
         chunk.meshGroup.add(roadMesh);
@@ -112,7 +124,8 @@ export class WorldBuilder {
         chunk.worldX,
         chunk.worldZ,
         this.originLat,
-        this.originLng
+        this.originLng,
+        baseElevation
       );
       if (buildingMesh) {
         chunk.meshGroup.add(buildingMesh);
@@ -141,7 +154,8 @@ export class WorldBuilder {
         chunk.worldX,
         chunk.worldZ,
         this.originLat,
-        this.originLng
+        this.originLng,
+        baseElevation
       );
       if (vegGroup) {
         chunk.meshGroup.add(vegGroup);

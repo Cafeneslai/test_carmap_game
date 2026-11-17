@@ -50,7 +50,7 @@ function ensureSharedAssets() {
  * @param {number} originLng
  * @returns {THREE.Group | null}
  */
-export function placeVegetation(greeneryElements, elevationData, chunkWorldX, chunkWorldZ, originLat, originLng) {
+export function placeVegetation(greeneryElements, elevationData, chunkWorldX, chunkWorldZ, originLat, originLng, baseElevation = null) {
   ensureSharedAssets();
 
   const treePositions = [];
@@ -131,7 +131,7 @@ export function placeVegetation(greeneryElements, elevationData, chunkWorldX, ch
     matrix.identity();
     matrix.makeRotationY(rotation);
     matrix.scale(new THREE.Vector3(scale, scale, scale));
-    matrix.setPosition(x, getElevationAt(x - chunkWorldX, z - chunkWorldZ, elevationData), z);
+    matrix.setPosition(x, getElevationAt(x - chunkWorldX, z - chunkWorldZ, elevationData, baseElevation), z);
 
     trunkInstanced.setMatrixAt(i, matrix);
     foliageInstanced.setMatrixAt(i, matrix);

@@ -207,6 +207,18 @@ export class CarController {
     return forward;
   }
 
+  /**
+   * Get the car yaw for HUD/minimap rotation.
+   * @returns {number} heading in radians
+   */
+  getHeading() {
+    const { x, y, z, w } = this.chassisBody.quaternion;
+    return Math.atan2(
+      2 * (w * y + x * z),
+      1 - 2 * (y * y + z * z)
+    );
+  }
+
   dispose() {
     this.vehicle.removeFromWorld(this.physicsWorld);
     this.physicsWorld.removeBody(this.chassisBody);

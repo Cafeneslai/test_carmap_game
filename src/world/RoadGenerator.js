@@ -18,7 +18,7 @@ import { getElevationAt } from './ElevationUtils.js';
  * @param {number} originLng
  * @returns {THREE.Mesh | null}
  */
-export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, originLat, originLng) {
+export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, originLat, originLng, baseElevation = null) {
   const geometries = [];
 
   for (const road of roads) {
@@ -34,14 +34,14 @@ export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, or
     });
 
     // Generate road strip geometry
-    const roadGeom = createRoadStrip(points, width / 2, elevationData, chunkWorldX, chunkWorldZ);
+    const roadGeom = createRoadStrip(points, width / 2, elevationData, chunkWorldX, chunkWorldZ, baseElevation);
     if (roadGeom) {
       geometries.push(roadGeom);
     }
 
     // Generate center line for major roads
     if (['motorway', 'trunk', 'primary', 'secondary', 'tertiary'].includes(highwayType)) {
-      const lineGeom = createRoadStrip(points, 0.15, elevationData, chunkWorldX, chunkWorldZ);
+      const lineGeom = createRoadStrip(points, 0.15, elevationData, chunkWorldX, chunkWorldZ, baseElevation);
       if (lineGeom) {
         // We'll handle marking color via vertex colors
         const colors = new Float32Array(lineGeom.attributes.position.count * 3);
@@ -85,7 +85,7 @@ export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, or
  * @param {number} chunkWorldZ
  * @returns {THREE.BufferGeometry | null}
  */
-function createRoadStrip(points, halfWidth, elevationData, chunkWorldX, chunkWorldZ) {
+function createRoadStrip(points, halfWidth, elevationData, chunkWorldX, chunkWorldZ, baseElevation = null) {
   if (points.length < 2) return null;
 
   const vertices = [];
@@ -122,8 +122,8 @@ function createRoadStrip(points, halfWidth, elevationData, chunkWorldX, chunkWor
     );
 
     // Add vertices (y = terrain elevation + offset)
-    const yLeft = getElevationAt(left.x - chunkWorldX, left.y - chunkWorldZ, elevationData) + ROAD_Y_OFFSET;
-    const yRight = getElevationAt(right.x - chunkWorldX, right.y - chunkWorldZ, elevationData) + ROAD_Y_OFFSET;
+    const yLeft = getElevationAt(left.x - chunkWorldX, left.y - chunkWorldZ, elevationData, baseElevation) + ROAD_Y_OFFSET;
+    const yRight = getElevationAt(right.x - chunkWorldX, right.y - chunkWorldZ, elevationData, baseElevation) + ROAD_Y_OFFSET;
     
     vertices.push(left.x, yLeft, left.y);
     vertices.push(right.x, yRight, right.y);

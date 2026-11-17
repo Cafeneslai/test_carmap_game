@@ -5,11 +5,12 @@
 // ====== World / Chunk ======
 export const CHUNK_SIZE = 200;           // meters per chunk side
 export const VIEW_DISTANCE = 3;          // chunks radius to load
+export const INITIAL_VIEW_DISTANCE = 0;  // load the starting chunk before entering play
 export const MAX_CONCURRENT_LOADS = 2;   // max chunks loading at once
 export const CHUNK_UNLOAD_BUFFER = 1;    // extra chunk buffer before unload
 
 // ====== Terrain ======
-export const TERRAIN_RESOLUTION = 32;    // vertices per chunk side
+export const TERRAIN_RESOLUTION = 8;     // elevation vertices per chunk side (8x8 = 64 points, fast and smooth)
 export const TERRAIN_Y_SCALE = 1;        // elevation multiplier
 
 // ====== Roads ======
@@ -71,13 +72,19 @@ export const CAMERA_LOOK_AHEAD = 5;
 export const CAMERA_DAMPING = 0.05;
 
 // ====== API Endpoints ======
-export const OVERPASS_API = 'https://overpass-api.de/api/interpreter';
+export const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+];
+export const OVERPASS_API = OVERPASS_ENDPOINTS[0];
 export const NOMINATIM_API = 'https://nominatim.openstreetmap.org/search';
 export const ELEVATION_API = 'https://api.opentopodata.org/v1/srtm30m';
+export const OPEN_METEO_ELEVATION_API = 'https://api.open-meteo.com/v1/elevation';
 
 // ====== Rate Limiting ======
-export const OSM_REQUEST_INTERVAL = 5000;  // ms between OSM requests
-export const ELEVATION_REQUEST_INTERVAL = 2000;
+export const OSM_REQUEST_INTERVAL = 800;   // ms between OSM requests
+export const ELEVATION_REQUEST_INTERVAL = 100;
 
 // ====== Cache ======
 export const CACHE_DB_NAME = 'car_gameworld_cache';

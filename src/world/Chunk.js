@@ -42,8 +42,8 @@ export class Chunk {
     // Physics bodies added to this chunk
     this.physicsBodies = [];
 
-    // Unique key for caching
-    this.key = `chunk_${chunkX}_${chunkZ}`;
+    // Unique key for caching (keyed by origin location + chunk coordinate)
+    this.key = `chunk_${originLat.toFixed(4)}_${originLng.toFixed(4)}_${chunkX}_${chunkZ}`;
   }
 
   /**
