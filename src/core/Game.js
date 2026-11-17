@@ -15,7 +15,7 @@ import { LoadingScreen } from '../ui/LoadingScreen.js';
 import { HUD } from '../ui/HUD.js';
 import { SettingsPanel } from '../ui/SettingsPanel.js';
 import { metersToLatLng } from '../data/GeoUtils.js';
-import { preloadRegion, getBestSpawnPoint } from '../data/OSMFetcher.js';
+import { preloadRegion, findSpawnPoint, clearRegion } from '../data/OSMFetcher.js';
 
 export class Game {
   /**
@@ -140,6 +140,7 @@ export class Game {
       this.loadingScreen.setText('กำลังเริ่มต้นระบบ Chunk...');
       this.loadingScreen.setProgress(20);
       this.chunkManager = new ChunkManager(this.scene, this.physicsWorld, location.lat, location.lng);
+      this.settingsPanel.applyTo(this.chunkManager);
 
       // 3. Setup car
       this.loadingScreen.setText('กำลังสร้างรถ...');
@@ -158,12 +159,13 @@ export class Game {
         if (text) this.loadingScreen.setText(text);
       });
 
-      // 6. Snap car to nearest road automatically
-      const spawn = getBestSpawnPoint(location.lat, location.lng);
-      if (spawn) {
-        this.carController.setSpawnPosition(spawn.x, 2, spawn.z, spawn.heading);
-        this.cameraController.reset();
-      }
+      // 6. Put the car on the nearest drivable road, pointing along it, resting on the terrain
+      const spawn = findSpawnPoint(this.chunkManager.getLoadedRoads(), location.lat, location.lng);
+      const sx = spawn?.x ?? 0;
+      const sz = spawn?.z ?? 0;
+      const ground = this.chunkManager.getTerrainHeight(sx, sz) ?? 0;
+      this.carController.setSpawnPosition(sx, ground + 1.5, sz, spawn?.heading ?? 0);
+      this.cameraController.reset();
 
       // 7. Ready!
       this.loadingScreen.setText('พร้อมขับสำรวจ!');
@@ -183,6 +185,7 @@ export class Game {
 
   resetToLocationSelect() {
     // Clean up
+    clearRegion();
     if (this.chunkManager) {
       this.chunkManager.dispose();
       this.chunkManager = null;
@@ -246,7 +249,8 @@ export class Game {
   }
 
   _updatePlaying(delta, elapsed) {
-    // Physics step
+    // A long frame (tab in background, GC pause) must not become one giant physics step
+    delta = Math.min(delta, 0.1);
     this.physicsWorld.step(PHYSICS_STEP, delta, 3);
 
     // Car

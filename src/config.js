@@ -5,7 +5,7 @@
 // ====== World / Chunk ======
 export const CHUNK_SIZE = 200;           // meters per chunk side
 export const VIEW_DISTANCE = 3;          // chunks radius to load
-export const INITIAL_VIEW_DISTANCE = 1;  // load 3x3 grid (9 chunks = 600m) before play so surrounding world is fully visible
+export const INITIAL_VIEW_DISTANCE = 1.5; // radius in chunks built before play: 1.5 = the full 3x3 block (600 m); 1 would only give a plus shape
 export const MAX_CONCURRENT_LOADS = 4;   // max chunks loading at once
 export const CHUNK_UNLOAD_BUFFER = 1;    // extra chunk buffer before unload
 
@@ -57,9 +57,11 @@ export const MAX_TREES_PER_CHUNK = 200;
 
 // ====== Car / Physics ======
 export const CAR_MASS = 1500;             // kg
-export const CAR_MAX_FORCE = 2000;        // engine force
-export const CAR_MAX_BRAKE = 100;
-export const CAR_MAX_STEER = 0.5;         // radians
+export const CAR_MAX_FORCE = 1900;        // engine force per wheel (4WD)
+export const CAR_MAX_BRAKE = 60;          // brake impulse per wheel
+export const CAR_MAX_STEER = 0.55;        // radians at standstill (reduced at speed)
+export const CAR_MAX_SPEED_KMH = 140;     // engine power fades out towards this speed
+export const CAR_MAX_REVERSE_KMH = 35;
 export const PHYSICS_STEP = 1 / 60;
 export const CAR_DIMENSIONS = { x: 2, y: 1.2, z: 4.5 };
 
@@ -77,8 +79,33 @@ export const OVERPASS_ENDPOINTS = [
   'https://overpass.private.coffee/api/interpreter',
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
 ];
-export const OVERPASS_API = OVERPASS_ENDPOINTS[0];
 export const NOMINATIM_API = 'https://nominatim.openstreetmap.org/search';
+export const OSM_MAP_API = 'https://api.openstreetmap.org/api/0.6/map';
+
+// ====== Map tiles (first = primary, rest = fallbacks used when tiles fail to load) ======
+// CARTO basemaps now return an "API KEY REQUIRED" watermark, so they are not used.
+export const TILE_LAYERS = {
+  dark: [
+    {
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+      options: { maxNativeZoom: 16, maxZoom: 19, attribution: 'Tiles &copy; Esri' },
+    },
+    {
+      url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      options: { maxNativeZoom: 19, maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' },
+    },
+  ],
+  street: [
+    {
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+      options: { maxNativeZoom: 19, maxZoom: 19, attribution: 'Tiles &copy; Esri' },
+    },
+    {
+      url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      options: { maxNativeZoom: 19, maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' },
+    },
+  ],
+};
 export const ELEVATION_API = 'https://api.opentopodata.org/v1/srtm30m';
 export const OPEN_METEO_ELEVATION_API = 'https://api.open-meteo.com/v1/elevation';
 

@@ -4,6 +4,8 @@
 
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import { addBaseLayer } from './tiles.js';
+import { headingToBearingDeg } from './compass.js';
 
 export class Minimap {
   constructor(containerId) {
@@ -25,11 +27,7 @@ export class Minimap {
       keyboard: false,
     }).setView([0, 0], 16);
 
-    // Use CartoDB Voyager or fallback for crisp, dark/clean game minimap
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-      subdomains: 'abcd',
-      maxZoom: 19,
-    }).addTo(this.map);
+    addBaseLayer(this.map, 'street');
 
     // Car marker (a directional arrow icon)
     const icon = L.divIcon({
@@ -66,8 +64,7 @@ export class Minimap {
 
     const dot = this.container.querySelector('.minimap-dot');
     if (dot) {
-      const deg = (heading * 180 / Math.PI) * -1;
-      dot.style.transform = `rotate(${deg}deg)`;
+      dot.style.transform = `rotate(${headingToBearingDeg(heading)}deg)`;
     }
 
     // Throttle Leaflet setView to prevent tile flooding and blank tiles

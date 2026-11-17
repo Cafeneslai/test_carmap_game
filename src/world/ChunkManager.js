@@ -39,6 +39,7 @@ export class ChunkManager {
 
     this.worldBuilder = new WorldBuilder(originLat, originLng);
     this.initialViewDistance = INITIAL_VIEW_DISTANCE ?? 0;
+    this.viewDistance = VIEW_DISTANCE;
 
     this.lastPlayerChunkX = null;
     this.lastPlayerChunkZ = null;
@@ -63,8 +64,9 @@ export class ChunkManager {
 
   _getChunksInRadius(cx, cz, radius) {
     const chunks = [];
-    for (let dx = -radius; dx <= radius; dx++) {
-      for (let dz = -radius; dz <= radius; dz++) {
+    const reach = Math.floor(radius); // radius may be fractional, e.g. 1.5 = full 3x3 block
+    for (let dx = -reach; dx <= reach; dx++) {
+      for (let dz = -reach; dz <= reach; dz++) {
         const dist = Math.hypot(dx, dz);
         if (dist <= radius) {
           chunks.push({ cx: cx + dx, cz: cz + dz, dist });
@@ -116,12 +118,12 @@ export class ChunkManager {
     this.lastPlayerChunkZ = cz;
 
     // Determine which chunks should be loaded
-    const inRadius = this._getChunksInRadius(cx, cz, VIEW_DISTANCE);
+    const inRadius = this._getChunksInRadius(cx, cz, this.viewDistance);
     const requiredChunks = new Set(inRadius.map(({ cx: gx, cz: gz }) => this._chunkKey(gx, gz)));
     this.requiredChunks = requiredChunks;
 
     // Unload chunks that are too far
-    const unloadDistance = VIEW_DISTANCE + CHUNK_UNLOAD_BUFFER;
+    const unloadDistance = this.viewDistance + CHUNK_UNLOAD_BUFFER;
     for (const [key, chunk] of this.chunks) {
       if (!requiredChunks.has(key)) {
         const dx = chunk.chunkX - cx;
@@ -156,6 +158,45 @@ export class ChunkManager {
       }
       this._loadChunk(next.cx, next.cz);
     }
+  }
+
+  /**
+   * Change how many chunks around the car are kept loaded (applies on the next update)
+   * @param {number} distance
+   */
+  setViewDistance(distance) {
+    this.viewDistance = Math.max(1, Math.round(distance));
+    this.lastPlayerChunkX = null;
+    this.lastPlayerChunkZ = null;
+  }
+
+  /**
+   * Show or hide trees in every loaded chunk, and in chunks loaded later
+   * @param {boolean} enabled
+   */
+  setTreesEnabled(enabled) {
+    this.worldBuilder.treesEnabled = enabled;
+    for (const chunk of this.chunks.values()) {
+      const trees = chunk.meshGroup.getObjectByName('vegetation');
+      if (trees) trees.visible = enabled;
+    }
+  }
+
+  /**
+   * Terrain height (relative to the start elevation) under a world position,
+   * or null while that chunk is not loaded yet.
+   */
+  getTerrainHeight(x, z) {
+    return this.worldBuilder.getTerrainHeight(this.chunks, x, z);
+  }
+
+  /** All roads of the chunks that are currently loaded */
+  getLoadedRoads() {
+    const roads = [];
+    for (const chunk of this.chunks.values()) {
+      if (chunk.osmData) roads.push(...chunk.osmData.roads);
+    }
+    return roads;
   }
 
   /**

@@ -13,6 +13,12 @@ export class CarModel {
     this.scene = scene;
     this.group = new THREE.Group();
 
+    // Everything except the wheels. Lowered so the underside sits just above the wheel hubs;
+    // the physics chassis origin is the car's centre of mass, not the middle of the bodywork.
+    this.shell = new THREE.Group();
+    this.shell.position.y = -0.25;
+    this.group.add(this.shell);
+
     this._buildBody();
     this._buildWindshield();
     this._buildWheels();
@@ -35,7 +41,7 @@ export class CarModel {
     this.body = new THREE.Mesh(bodyGeom, bodyMat);
     this.body.position.y = y * 0.25;
     this.body.castShadow = true;
-    this.group.add(this.body);
+    this.shell.add(this.body);
 
     // Cabin (upper)
     const cabinGeom = new THREE.BoxGeometry(x * 0.85, y * 0.4, z * 0.55);
@@ -47,7 +53,7 @@ export class CarModel {
     this.cabin = new THREE.Mesh(cabinGeom, cabinMat);
     this.cabin.position.set(0, y * 0.7, -z * 0.05);
     this.cabin.castShadow = true;
-    this.group.add(this.cabin);
+    this.shell.add(this.cabin);
   }
 
   _buildWindshield() {
@@ -66,23 +72,23 @@ export class CarModel {
     const frontGlass = new THREE.Mesh(windshieldGeom, glassMat);
     frontGlass.position.set(0, y * 0.72, z * 0.21);
     frontGlass.rotation.x = 0.2;
-    this.group.add(frontGlass);
+    this.shell.add(frontGlass);
 
     // Rear windshield
     const rearGlass = new THREE.Mesh(windshieldGeom, glassMat);
     rearGlass.position.set(0, y * 0.72, -z * 0.3);
     rearGlass.rotation.x = -0.2;
-    this.group.add(rearGlass);
+    this.shell.add(rearGlass);
 
     // Side windows
     const sideGeom = new THREE.BoxGeometry(0.05, y * 0.3, z * 0.4);
     const leftWindow = new THREE.Mesh(sideGeom, glassMat);
     leftWindow.position.set(-x * 0.43, y * 0.7, -z * 0.05);
-    this.group.add(leftWindow);
+    this.shell.add(leftWindow);
 
     const rightWindow = new THREE.Mesh(sideGeom, glassMat);
     rightWindow.position.set(x * 0.43, y * 0.7, -z * 0.05);
-    this.group.add(rightWindow);
+    this.shell.add(rightWindow);
   }
 
   _buildWheels() {
@@ -147,11 +153,11 @@ export class CarModel {
 
     const hl1 = new THREE.Mesh(headlightGeom, headlightMat);
     hl1.position.set(-x * 0.35, y * 0.25, z * 0.5);
-    this.group.add(hl1);
+    this.shell.add(hl1);
 
     const hl2 = new THREE.Mesh(headlightGeom, headlightMat);
     hl2.position.set(x * 0.35, y * 0.25, z * 0.5);
-    this.group.add(hl2);
+    this.shell.add(hl2);
 
     // Taillights
     const taillightGeom = new THREE.BoxGeometry(0.2, 0.1, 0.05);
@@ -164,11 +170,11 @@ export class CarModel {
 
     const tl1 = new THREE.Mesh(taillightGeom, taillightMat);
     tl1.position.set(-x * 0.35, y * 0.25, -z * 0.5);
-    this.group.add(tl1);
+    this.shell.add(tl1);
 
     const tl2 = new THREE.Mesh(taillightGeom, taillightMat);
     tl2.position.set(x * 0.35, y * 0.25, -z * 0.5);
-    this.group.add(tl2);
+    this.shell.add(tl2);
   }
 
   /**

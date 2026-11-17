@@ -54,9 +54,10 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
     // Create Three.js Shape
     try {
       const shape = new THREE.Shape();
-      shape.moveTo(shapePoints[0].x, shapePoints[0].y);
+      // rotateX(-PI/2) below maps shape-Y to world -Z, so feed -Z to land on the right side
+      shape.moveTo(shapePoints[0].x, -shapePoints[0].y);
       for (let i = 1; i < shapePoints.length; i++) {
-        shape.lineTo(shapePoints[i].x, shapePoints[i].y);
+        shape.lineTo(shapePoints[i].x, -shapePoints[i].y);
       }
 
       // Extrude
@@ -86,7 +87,8 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
       geometry.translate(0, baseY - 0.5, 0);
 
       // Pick a color for this building
-      const colorHex = BUILDING_COLORS[Math.floor(Math.random() * BUILDING_COLORS.length)];
+      // Deterministic per building so a building drawn by two chunks never flickers
+      const colorHex = BUILDING_COLORS[Math.abs(Number(building.id) || 0) % BUILDING_COLORS.length];
       const color = new THREE.Color(colorHex);
 
       // Add vertex colors

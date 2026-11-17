@@ -3,7 +3,9 @@
  */
 
 import * as THREE from 'three';
-import { TREE_DENSITY, MAX_TREES_PER_CHUNK } from '../config.js';
+import { TREE_DENSITY, MAX_TREES_PER_CHUNK, CHUNK_SIZE } from '../config.js';
+
+const MAX_CANDIDATES_PER_POLYGON = 40000;
 import { latLngToMeters } from '../data/GeoUtils.js';
 import { getElevationAt } from './ElevationUtils.js';
 
@@ -74,12 +76,10 @@ export function placeVegetation(greeneryElements, elevationData, chunkWorldX, ch
       if (p.z > maxZ) maxZ = p.z;
     }
 
-    // Scatter trees within polygon
+    // Scatter trees within polygon. The candidate sequence depends only on the polygon, never on
+    // the chunk, so every chunk a park touches computes the same trees and keeps only its own.
     const area = (maxX - minX) * (maxZ - minZ);
-    const numTrees = Math.min(
-      Math.floor(area * TREE_DENSITY),
-      MAX_TREES_PER_CHUNK - treePositions.length
-    );
+    const numTrees = Math.min(Math.floor(area * TREE_DENSITY), MAX_CANDIDATES_PER_POLYGON);
 
     // Seeded random based on polygon position (deterministic)
     let seed = Math.abs(Math.floor(minX * 100 + minZ * 77));
@@ -97,7 +97,9 @@ export function placeVegetation(greeneryElements, elevationData, chunkWorldX, ch
         seed = (seed * 16807 + 7) % 2147483647;
         const rotation = (seed / 2147483647) * Math.PI * 2;
 
-        treePositions.push({ x: rx, z: rz, scale, rotation });
+        const inChunk = rx >= chunkWorldX - CHUNK_SIZE / 2 && rx < chunkWorldX + CHUNK_SIZE / 2 &&
+          rz >= chunkWorldZ - CHUNK_SIZE / 2 && rz < chunkWorldZ + CHUNK_SIZE / 2;
+        if (inChunk) treePositions.push({ x: rx, z: rz, scale, rotation });
       }
     }
   }

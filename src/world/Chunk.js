@@ -47,15 +47,12 @@ export class Chunk {
   }
 
   /**
-   * Get bounding box in lat/lng for this chunk
+   * Exact bounding box in lat/lng of this chunk (no padding). The elevation grid is sampled on
+   * exactly this box so neighbouring chunks share their edge samples and the terrain has no seams.
    */
   getBBox() {
-    const halfSize = CHUNK_SIZE / 2;
-
-    // Convert chunk corners to lat/lng
     const center = metersToLatLng(this.worldX, this.worldZ, this.originLat, this.originLng);
-
-    return getBoundingBox(center.lat, center.lng, halfSize * 1.1); // slight padding
+    return getBoundingBox(center.lat, center.lng, CHUNK_SIZE / 2);
   }
 
   /**
