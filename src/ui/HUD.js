@@ -26,6 +26,11 @@ export class HUD {
   show(locationName) {
     this.el.classList.remove('hidden');
     this.locationEl.textContent = `📍 ${locationName}`;
+    setTimeout(() => {
+      if (this.minimap) {
+        this.minimap.invalidateSize();
+      }
+    }, 100);
   }
 
   hide() {

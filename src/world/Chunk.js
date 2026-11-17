@@ -42,20 +42,17 @@ export class Chunk {
     // Physics bodies added to this chunk
     this.physicsBodies = [];
 
-    // Unique key for caching
-    this.key = `chunk_${chunkX}_${chunkZ}`;
+    // Unique key for caching (keyed by origin location + chunk coordinate)
+    this.key = `chunk_${originLat.toFixed(4)}_${originLng.toFixed(4)}_${chunkX}_${chunkZ}`;
   }
 
   /**
-   * Get bounding box in lat/lng for this chunk
+   * Exact bounding box in lat/lng of this chunk (no padding). The elevation grid is sampled on
+   * exactly this box so neighbouring chunks share their edge samples and the terrain has no seams.
    */
   getBBox() {
-    const halfSize = CHUNK_SIZE / 2;
-
-    // Convert chunk corners to lat/lng
     const center = metersToLatLng(this.worldX, this.worldZ, this.originLat, this.originLng);
-
-    return getBoundingBox(center.lat, center.lng, halfSize * 1.1); // slight padding
+    return getBoundingBox(center.lat, center.lng, CHUNK_SIZE / 2);
   }
 
   /**

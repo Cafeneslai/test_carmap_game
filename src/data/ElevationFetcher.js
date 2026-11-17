@@ -1,104 +1,66 @@
 /**
- * ElevationFetcher.js — Fetch elevation data from Open Topo Data API
+ * ElevationFetcher.js — Look up ground elevation for a list of coordinates.
+ *
+ * Open-Meteo is the primary provider (CORS enabled, one request for up to 100 points). It meters
+ * usage per coordinate (about 600 per minute on the free tier), so callers should ask for as few
+ * points as possible — see ElevationField. OpenTopoData is the fallback.
  */
 
-import { ELEVATION_API, ELEVATION_REQUEST_INTERVAL } from '../config.js';
+import { ELEVATION_API, OPEN_METEO_ELEVATION_API } from '../config.js';
 
-let lastRequestTime = 0;
+export const MAX_POINTS_PER_REQUEST = 100;
+const TIMEOUT_MS = 8000;
 
-/**
- * Rate limit wait
- */
-async function rateLimitWait() {
-  const now = Date.now();
-  const elapsed = now - lastRequestTime;
-  if (elapsed < ELEVATION_REQUEST_INTERVAL) {
-    await new Promise(r => setTimeout(r, ELEVATION_REQUEST_INTERVAL - elapsed));
-  }
-  lastRequestTime = Date.now();
-}
-
-/**
- * Fetch elevation for a grid of points within a bounding box
- * 
- * @param {{ south: number, west: number, north: number, east: number }} bbox
- * @param {number} resolution - Number of points per side (e.g., 8 = 8x8 grid)
- * @returns {Promise<number[][]>} 2D array of elevation values [row][col]
- */
-export async function fetchElevationGrid(bbox, resolution = 8) {
-  const { south, west, north, east } = bbox;
-
-  // Build coordinate pairs
-  const points = [];
-  const latStep = (north - south) / (resolution - 1);
-  const lngStep = (east - west) / (resolution - 1);
-
-  for (let row = 0; row < resolution; row++) {
-    for (let col = 0; col < resolution; col++) {
-      const lat = south + row * latStep;
-      const lng = west + col * lngStep;
-      points.push(`${lat.toFixed(6)},${lng.toFixed(6)}`);
-    }
-  }
-
-  // Open Topo Data accepts max 100 points per request
-  const batchSize = 100;
-  const allElevations = [];
-
-  for (let i = 0; i < points.length; i += batchSize) {
-    const batch = points.slice(i, i + batchSize);
-    const locations = batch.join('|');
-
-    try {
-      await rateLimitWait();
-
-      const response = await fetch(`${ELEVATION_API}?locations=${locations}`);
-
-      if (!response.ok) {
-        console.warn(`Elevation API error: ${response.status}`);
-        // Fill with zeros on failure
-        allElevations.push(...batch.map(() => 0));
-        continue;
-      }
-
-      const data = await response.json();
-
-      if (data.results) {
-        for (const result of data.results) {
-          allElevations.push(result.elevation ?? 0);
-        }
-      } else {
-        allElevations.push(...batch.map(() => 0));
-      }
-    } catch (err) {
-      console.warn('Elevation fetch failed, using flat terrain:', err.message);
-      allElevations.push(...batch.map(() => 0));
-    }
-  }
-
-  // Reshape to 2D grid
-  const grid = [];
-  for (let row = 0; row < resolution; row++) {
-    grid.push(allElevations.slice(row * resolution, (row + 1) * resolution));
-  }
-
-  return grid;
-}
-
-/**
- * Fetch elevation at a single point
- * 
- * @param {number} lat 
- * @param {number} lng 
- * @returns {Promise<number>}
- */
-export async function getElevationAtPoint(lat, lng) {
+async function getJson(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    await rateLimitWait();
-    const response = await fetch(`${ELEVATION_API}?locations=${lat},${lng}`);
-    const data = await response.json();
-    return data.results?.[0]?.elevation ?? 0;
-  } catch {
-    return 0;
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fromOpenMeteo(points) {
+  const lats = points.map((p) => p.lat.toFixed(5)).join(',');
+  const lngs = points.map((p) => p.lng.toFixed(5)).join(',');
+  const data = await getJson(`${OPEN_METEO_ELEVATION_API}?latitude=${lats}&longitude=${lngs}`);
+  if (!Array.isArray(data.elevation) || data.elevation.length !== points.length) {
+    throw new Error('Open-Meteo returned an unexpected payload');
+  }
+  return data.elevation.map((v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0));
+}
+
+async function fromOpenTopoData(points) {
+  const locations = points.map((p) => `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`).join('|');
+  const data = await getJson(`${ELEVATION_API}?locations=${locations}`);
+  if (!Array.isArray(data.results) || data.results.length !== points.length) {
+    throw new Error('OpenTopoData returned an unexpected payload');
+  }
+  return data.results.map((r) => (typeof r.elevation === 'number' ? r.elevation : 0));
+}
+
+/**
+ * Elevation in metres for each point, in the same order.
+ * @param {{ lat: number, lng: number }[]} points at most MAX_POINTS_PER_REQUEST
+ * @returns {Promise<number[]>}
+ * @throws when every provider failed, so callers never mistake a failure for sea level
+ */
+export async function fetchElevations(points) {
+  if (points.length === 0) return [];
+  if (points.length > MAX_POINTS_PER_REQUEST) {
+    throw new Error(`At most ${MAX_POINTS_PER_REQUEST} points per request`);
+  }
+
+  try {
+    return await fromOpenMeteo(points);
+  } catch (primaryError) {
+    try {
+      return await fromOpenTopoData(points);
+    } catch (fallbackError) {
+      throw new Error(`Elevation providers unavailable (${primaryError.message}; ${fallbackError.message})`);
+    }
   }
 }

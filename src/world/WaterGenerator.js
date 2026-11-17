@@ -4,6 +4,9 @@
 
 import * as THREE from 'three';
 import { latLngToMeters } from '../data/GeoUtils.js';
+import { getElevationAt } from './ElevationUtils.js';
+
+const WATER_Y_OFFSET = 0.05;
 
 /**
  * Generate water surface from OSM water data
@@ -13,13 +16,16 @@ import { latLngToMeters } from '../data/GeoUtils.js';
  * @param {number} chunkWorldZ
  * @param {number} originLat
  * @param {number} originLng
+ * @param {number[][]} [elevationData] - chunk elevation grid, used to float the water on the terrain
+ * @param {number | null} [baseElevation]
  * @returns {THREE.Mesh | null}
  */
-export function generateWater(waterElements, chunkWorldX, chunkWorldZ, originLat, originLng) {
+export function generateWater(waterElements, chunkWorldX, chunkWorldZ, originLat, originLng, elevationData = null, baseElevation = null) {
   const geometries = [];
 
   for (const element of waterElements) {
-    if (!element.geometry || element.geometry.length < 3) continue;
+    const isWaterway = !!element.tags?.waterway;
+    if (!element.geometry || element.geometry.length < (isWaterway ? 2 : 3)) continue;
 
     // Convert coordinates
     const points = element.geometry.map(node => {
@@ -27,10 +33,19 @@ export function generateWater(waterElements, chunkWorldX, chunkWorldZ, originLat
       return new THREE.Vector2(x, z);
     });
 
+    // Water level: terrain height at the middle of the feature
+    let cx = 0, cz = 0;
+    for (const p of points) { cx += p.x; cz += p.y; }
+    cx /= points.length;
+    cz /= points.length;
+    const waterY = (elevationData
+      ? getElevationAt(cx - chunkWorldX, cz - chunkWorldZ, elevationData, baseElevation)
+      : 0) + WATER_Y_OFFSET;
+
     // For waterways (rivers/streams), create a strip
-    if (element.tags?.waterway) {
+    if (isWaterway) {
       const width = getWaterwayWidth(element.tags.waterway);
-      const strip = createWaterStrip(points, width / 2);
+      const strip = createWaterStrip(points, width / 2, waterY);
       if (strip) geometries.push(strip);
       continue;
     }
@@ -38,18 +53,18 @@ export function generateWater(waterElements, chunkWorldX, chunkWorldZ, originLat
     // For water bodies (lakes, ponds), create a filled polygon
     if (points.length >= 3) {
       try {
+        // rotateX(-PI/2) below maps shape-Y to world -Z, so feed -Z to land on the right side
         const shape = new THREE.Shape();
-        shape.moveTo(points[0].x, points[0].y);
+        shape.moveTo(points[0].x, -points[0].y);
         for (let i = 1; i < points.length; i++) {
-          shape.lineTo(points[i].x, points[i].y);
+          shape.lineTo(points[i].x, -points[i].y);
         }
 
         const geometry = new THREE.ShapeGeometry(shape);
         geometry.rotateX(-Math.PI / 2);
-        // Raise slightly above terrain
         const positions = geometry.attributes.position;
         for (let i = 0; i < positions.count; i++) {
-          positions.setY(i, 0.02);
+          positions.setY(i, waterY);
         }
         geometries.push(geometry);
       } catch {
@@ -64,13 +79,16 @@ export function generateWater(waterElements, chunkWorldX, chunkWorldZ, originLat
   const merged = mergeSimple(geometries);
   if (!merged) return null;
 
+  // Opaque on purpose: neighbouring chunks can both draw the same lake, and overlapping
+  // translucent copies would blend twice and look darker.
   const material = new THREE.MeshStandardMaterial({
-    color: 0x2288bb,
-    transparent: true,
-    opacity: 0.7,
-    roughness: 0.1,
-    metalness: 0.3,
+    color: 0x2f8fc4,
+    roughness: 0.2,
+    metalness: 0.2,
     side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
   });
 
   const mesh = new THREE.Mesh(merged, material);
@@ -89,7 +107,7 @@ function getWaterwayWidth(type) {
   }
 }
 
-function createWaterStrip(points, halfWidth) {
+function createWaterStrip(points, halfWidth, waterY) {
   if (points.length < 2) return null;
 
   const vertices = [];
@@ -110,14 +128,14 @@ function createWaterStrip(points, halfWidth) {
     const normal = new THREE.Vector2(-dir.y, dir.x);
 
     vertices.push(
-      points[i].x + normal.x * halfWidth, 0.02, points[i].y + normal.y * halfWidth,
-      points[i].x - normal.x * halfWidth, 0.02, points[i].y - normal.y * halfWidth
+      points[i].x + normal.x * halfWidth, waterY, points[i].y + normal.y * halfWidth,
+      points[i].x - normal.x * halfWidth, waterY, points[i].y - normal.y * halfWidth
     );
 
     if (i > 0) {
       const idx = (i - 1) * 2;
-      indices.push(idx, idx + 1, idx + 2);
-      indices.push(idx + 1, idx + 3, idx + 2);
+      indices.push(idx, idx + 2, idx + 1);
+      indices.push(idx + 1, idx + 2, idx + 3);
     }
   }
 

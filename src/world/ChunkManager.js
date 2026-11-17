@@ -1,8 +1,14 @@
 /**
- * ChunkManager.js — Manages loading/unloading of world chunks around the player
+ * ChunkManager.js — Manages fast initial loading and background chunk streaming
  */
 
-import { CHUNK_SIZE, VIEW_DISTANCE, MAX_CONCURRENT_LOADS, CHUNK_UNLOAD_BUFFER } from '../config.js';
+import {
+  CHUNK_SIZE,
+  VIEW_DISTANCE,
+  INITIAL_VIEW_DISTANCE,
+  MAX_CONCURRENT_LOADS,
+  CHUNK_UNLOAD_BUFFER,
+} from '../config.js';
 import { Chunk, CHUNK_STATES } from './Chunk.js';
 import { WorldBuilder } from './WorldBuilder.js';
 
@@ -25,7 +31,15 @@ export class ChunkManager {
     /** @type {Set<string>} */
     this.loadingChunks = new Set();
 
+    /** @type {Set<string>} */
+    this.requiredChunks = new Set();
+
+    /** @type {{ key: string, cx: number, cz: number, dist: number }[]} */
+    this.loadQueue = [];
+
     this.worldBuilder = new WorldBuilder(originLat, originLng);
+    this.initialViewDistance = INITIAL_VIEW_DISTANCE ?? 0;
+    this.viewDistance = VIEW_DISTANCE;
 
     this.lastPlayerChunkX = null;
     this.lastPlayerChunkZ = null;
@@ -48,50 +62,44 @@ export class ChunkManager {
     return `${cx},${cz}`;
   }
 
-  /**
-   * Load initial chunks around origin (called during game start)
-   * @param {(progress: number, text?: string) => void} onProgress
-   */
-  async loadInitialChunks(onProgress) {
-    const chunksToLoad = [];
-
-    // Load in a circle around origin
-    for (let dx = -VIEW_DISTANCE; dx <= VIEW_DISTANCE; dx++) {
-      for (let dz = -VIEW_DISTANCE; dz <= VIEW_DISTANCE; dz++) {
-        const dist = Math.sqrt(dx * dx + dz * dz);
-        if (dist <= VIEW_DISTANCE) {
-          chunksToLoad.push({ cx: dx, cz: dz, dist });
+  _getChunksInRadius(cx, cz, radius) {
+    const chunks = [];
+    const reach = Math.floor(radius); // radius may be fractional, e.g. 1.5 = full 3x3 block
+    for (let dx = -reach; dx <= reach; dx++) {
+      for (let dz = -reach; dz <= reach; dz++) {
+        const dist = Math.hypot(dx, dz);
+        if (dist <= radius) {
+          chunks.push({ cx: cx + dx, cz: cz + dz, dist });
         }
       }
     }
+    return chunks.sort((a, b) => a.dist - b.dist);
+  }
 
-    // Sort by distance (closest first)
-    chunksToLoad.sort((a, b) => a.dist - b.dist);
-
-    const total = chunksToLoad.length;
+  /**
+   * Load initial chunks around origin (called during game start)
+   * Only loads the immediate starting chunk so player can drive in <2 seconds!
+   * @param {(progress: number, text?: string) => void} onProgress
+   */
+  async loadInitialChunks(onProgress) {
+    const chunksToLoad = this._getChunksInRadius(0, 0, this.initialViewDistance);
+    const total = chunksToLoad.length || 1;
 
     for (let i = 0; i < total; i++) {
       const { cx, cz } = chunksToLoad[i];
       const key = this._chunkKey(cx, cz);
 
       if (!this.chunks.has(key)) {
-        const progressText = i < 2
-          ? 'กำลังดึงข้อมูลถนนและอาคาร...'
-          : i < total * 0.5
-            ? 'กำลังสร้างภูมิประเทศ...'
-            : i < total * 0.8
-              ? 'กำลังวางต้นไม้และอาคาร...'
-              : 'กำลังปรับแต่งรายละเอียด...';
-
-        onProgress(i / total, progressText);
+        onProgress(i / total, 'กำลังสร้างสภาพแวดล้อมเริ่มต้น...');
         await this._loadChunk(cx, cz);
       }
     }
 
-    onProgress(1, 'เสร็จสิ้น!');
+    onProgress(1, 'พร้อมออกเดินทาง! กำลังสตรีมพื้นที่รอบข้าง...');
 
-    this.lastPlayerChunkX = 0;
-    this.lastPlayerChunkZ = 0;
+    // Force first update() call to populate and stream outer chunks in background
+    this.lastPlayerChunkX = null;
+    this.lastPlayerChunkZ = null;
   }
 
   /**
@@ -101,8 +109,8 @@ export class ChunkManager {
   update(playerPos) {
     const { cx, cz } = this._worldToChunk(playerPos.x, playerPos.z);
 
-    // Only process if player moved to a new chunk
     if (cx === this.lastPlayerChunkX && cz === this.lastPlayerChunkZ) {
+      this._pumpLoadQueue();
       return;
     }
 
@@ -110,47 +118,85 @@ export class ChunkManager {
     this.lastPlayerChunkZ = cz;
 
     // Determine which chunks should be loaded
-    const requiredChunks = new Set();
-
-    for (let dx = -VIEW_DISTANCE; dx <= VIEW_DISTANCE; dx++) {
-      for (let dz = -VIEW_DISTANCE; dz <= VIEW_DISTANCE; dz++) {
-        const dist = Math.sqrt(dx * dx + dz * dz);
-        if (dist <= VIEW_DISTANCE) {
-          requiredChunks.add(this._chunkKey(cx + dx, cz + dz));
-        }
-      }
-    }
+    const inRadius = this._getChunksInRadius(cx, cz, this.viewDistance);
+    const requiredChunks = new Set(inRadius.map(({ cx: gx, cz: gz }) => this._chunkKey(gx, gz)));
+    this.requiredChunks = requiredChunks;
 
     // Unload chunks that are too far
-    const unloadDistance = VIEW_DISTANCE + CHUNK_UNLOAD_BUFFER;
+    const unloadDistance = this.viewDistance + CHUNK_UNLOAD_BUFFER;
     for (const [key, chunk] of this.chunks) {
       if (!requiredChunks.has(key)) {
         const dx = chunk.chunkX - cx;
         const dz = chunk.chunkZ - cz;
-        if (Math.sqrt(dx * dx + dz * dz) > unloadDistance) {
+        if (Math.hypot(dx, dz) > unloadDistance) {
           this._unloadChunk(key, chunk);
         }
       }
     }
 
-    // Load new chunks (prioritize by distance)
+    // Build prioritize list to load
     const toLoad = [];
-    for (const key of requiredChunks) {
+    for (const item of inRadius) {
+      const key = this._chunkKey(item.cx, item.cz);
       if (!this.chunks.has(key) && !this.loadingChunks.has(key)) {
-        const [gx, gz] = key.split(',').map(Number);
-        const dist = Math.sqrt((gx - cx) ** 2 + (gz - cz) ** 2);
-        toLoad.push({ key, cx: gx, cz: gz, dist });
+        toLoad.push({ key, cx: item.cx, cz: item.cz, dist: item.dist });
       }
     }
 
-    toLoad.sort((a, b) => a.dist - b.dist);
+    this.loadQueue = toLoad;
+    this._pumpLoadQueue();
+  }
 
-    // Load up to MAX_CONCURRENT_LOADS
-    const canLoad = MAX_CONCURRENT_LOADS - this.loadingChunks.size;
-    for (let i = 0; i < Math.min(canLoad, toLoad.length); i++) {
-      const { cx: loadCx, cz: loadCz } = toLoad[i];
-      this._loadChunk(loadCx, loadCz);
+  /**
+   * Pump chunk queue up to MAX_CONCURRENT_LOADS
+   */
+  _pumpLoadQueue() {
+    while (this.loadingChunks.size < MAX_CONCURRENT_LOADS && this.loadQueue.length > 0) {
+      const next = this.loadQueue.shift();
+      if (!this.requiredChunks.has(next.key) || this.chunks.has(next.key) || this.loadingChunks.has(next.key)) {
+        continue;
+      }
+      this._loadChunk(next.cx, next.cz);
     }
+  }
+
+  /**
+   * Change how many chunks around the car are kept loaded (applies on the next update)
+   * @param {number} distance
+   */
+  setViewDistance(distance) {
+    this.viewDistance = Math.max(1, Math.round(distance));
+    this.lastPlayerChunkX = null;
+    this.lastPlayerChunkZ = null;
+  }
+
+  /**
+   * Show or hide trees in every loaded chunk, and in chunks loaded later
+   * @param {boolean} enabled
+   */
+  setTreesEnabled(enabled) {
+    this.worldBuilder.treesEnabled = enabled;
+    for (const chunk of this.chunks.values()) {
+      const trees = chunk.meshGroup.getObjectByName('vegetation');
+      if (trees) trees.visible = enabled;
+    }
+  }
+
+  /**
+   * Terrain height (relative to the start elevation) under a world position,
+   * or null while that chunk is not loaded yet.
+   */
+  getTerrainHeight(x, z) {
+    return this.worldBuilder.getTerrainHeight(this.chunks, x, z);
+  }
+
+  /** All roads of the chunks that are currently loaded */
+  getLoadedRoads() {
+    const roads = [];
+    for (const chunk of this.chunks.values()) {
+      if (chunk.osmData) roads.push(...chunk.osmData.roads);
+    }
+    return roads;
   }
 
   /**
@@ -174,6 +220,7 @@ export class ChunkManager {
       console.warn(`Failed to load chunk ${key}:`, err);
     } finally {
       this.loadingChunks.delete(key);
+      this._pumpLoadQueue();
     }
   }
 
@@ -194,5 +241,7 @@ export class ChunkManager {
     }
     this.chunks.clear();
     this.loadingChunks.clear();
+    this.requiredChunks.clear();
+    this.loadQueue = [];
   }
 }

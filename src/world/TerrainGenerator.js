@@ -16,7 +16,7 @@ import { CHUNK_SIZE, TERRAIN_RESOLUTION, TERRAIN_Y_SCALE } from '../config.js';
  * @param {number} originLng
  * @returns {{ mesh: THREE.Mesh | null, body: CANNON.Body | null }}
  */
-export function generateTerrain(elevationGrid, chunkWorldX, chunkWorldZ, originLat, originLng) {
+export function generateTerrain(elevationGrid, chunkWorldX, chunkWorldZ, originLat, originLng, baseElevation = null) {
   if (!elevationGrid || elevationGrid.length === 0) {
     return { mesh: null, body: null };
   }
@@ -38,10 +38,12 @@ export function generateTerrain(elevationGrid, chunkWorldX, chunkWorldZ, originL
     }
   }
 
-  // Compute base elevation (center of chunk)
-  const centerRow = Math.floor(res / 2);
-  const centerCol = Math.floor(res / 2);
-  const baseElevation = elevationGrid[centerRow]?.[centerCol] ?? 0;
+  // Compute base elevation if not provided
+  if (baseElevation === null) {
+    const centerRow = Math.floor(res / 2);
+    const centerCol = Math.floor(res / 2);
+    baseElevation = elevationGrid[centerRow]?.[centerCol] ?? 0;
+  }
 
   // Color palette for terrain
   const colorLow = new THREE.Color(0x4a7c3f);   // green grass

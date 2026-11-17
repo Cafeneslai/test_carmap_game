@@ -4,22 +4,77 @@
 
 import { cache } from '../data/CacheManager.js';
 import { fetchChunkData } from '../data/OSMFetcher.js';
-import { fetchElevationGrid } from '../data/ElevationFetcher.js';
-import { TERRAIN_RESOLUTION } from '../config.js';
+import { ElevationField } from '../data/ElevationField.js';
+import { TERRAIN_RESOLUTION, CHUNK_SIZE } from '../config.js';
+import { getElevationAt } from './ElevationUtils.js';
 import { generateTerrain } from './TerrainGenerator.js';
 import { generateRoads } from './RoadGenerator.js';
 import { generateBuildings } from './BuildingGenerator.js';
 import { generateWater } from './WaterGenerator.js';
 import { placeVegetation } from './VegetationPlacer.js';
 
+// Bump when the shape or orientation of cached data changes. v3: elevation comes from the shared
+// world lattice (ElevationField), rows run north->south, buildings belong to a single chunk.
+const CACHE_VERSION = 'v3';
+
+function flatGrid() {
+  return Array.from({ length: TERRAIN_RESOLUTION }, () => new Array(TERRAIN_RESOLUTION).fill(0));
+}
+
 export class WorldBuilder {
   /**
-   * @param {number} originLat 
-   * @param {number} originLng 
+   * @param {number} originLat
+   * @param {number} originLng
    */
   constructor(originLat, originLng) {
     this.originLat = originLat;
     this.originLng = originLng;
+    this.originBaseElevation = null;
+    this.treesEnabled = true;
+    this.elevation = new ElevationField(originLat, originLng);
+  }
+
+  async _loadOsm(chunk, bbox) {
+    const key = `osm_${CACHE_VERSION}_${chunk.key}`;
+    const cached = await cache.get(key);
+    if (cached) return cached;
+
+    try {
+      const data = await fetchChunkData(bbox);
+      if (!data.synthetic) cache.set(key, data);
+      return data;
+    } catch (err) {
+      console.warn('OSM data failed for chunk', chunk.key, err);
+      return { roads: [], buildings: [], water: [], greenery: [] };
+    }
+  }
+
+  async _loadElevation(chunk) {
+    const key = `elev_${CACHE_VERSION}_${chunk.key}`;
+    const cached = await cache.get(key);
+    if (cached) return cached;
+
+    try {
+      const { grid, complete } = await this.elevation.sampleChunk(chunk.chunkX, chunk.chunkZ, TERRAIN_RESOLUTION);
+      if (complete) cache.set(key, grid); // an estimated grid is shown but never cached
+      return grid;
+    } catch (err) {
+      // Flat ground for this session only; never cache a made-up grid.
+      console.warn('Elevation unavailable for chunk', chunk.key, err.message);
+      return flatGrid();
+    }
+  }
+
+  /**
+   * Height of the terrain at a world position, or null when that chunk is not built.
+   * @param {Map<string, import('./Chunk.js').Chunk>} chunks
+   */
+  getTerrainHeight(chunks, x, z) {
+    const cx = Math.floor(x / CHUNK_SIZE + 0.5);
+    const cz = Math.floor(z / CHUNK_SIZE + 0.5);
+    const chunk = chunks.get(`${cx},${cz}`);
+    if (!chunk || !chunk.elevationData) return null;
+    return getElevationAt(x - chunk.worldX, z - chunk.worldZ, chunk.elevationData, this.originBaseElevation);
   }
 
   /**
@@ -31,124 +86,59 @@ export class WorldBuilder {
   async buildChunk(chunk, scene, physicsWorld) {
     const bbox = chunk.getBBox();
 
-    // Try cache first
-    let osmData = await cache.get(`osm_${chunk.key}`);
-    let elevationData = await cache.get(`elev_${chunk.key}`);
-
-    // Fetch in parallel if not cached
-    const fetchPromises = [];
-
-    if (!osmData) {
-      fetchPromises.push(
-        fetchChunkData(bbox).then(data => {
-          osmData = data;
-          cache.set(`osm_${chunk.key}`, data);
-        }).catch(err => {
-          console.warn('OSM fetch failed for chunk', chunk.key, err);
-          osmData = { roads: [], buildings: [], water: [], greenery: [] };
-        })
-      );
-    }
-
-    if (!elevationData) {
-      fetchPromises.push(
-        fetchElevationGrid(bbox, TERRAIN_RESOLUTION).then(data => {
-          elevationData = data;
-          cache.set(`elev_${chunk.key}`, data);
-        }).catch(() => {
-          // Fallback to flat terrain
-          elevationData = Array.from({ length: TERRAIN_RESOLUTION },
-            () => new Array(TERRAIN_RESOLUTION).fill(0)
-          );
-        })
-      );
-    }
-
-    if (fetchPromises.length > 0) {
-      await Promise.all(fetchPromises);
-    }
+    const [osmData, elevationData] = await Promise.all([
+      this._loadOsm(chunk, bbox),
+      this._loadElevation(chunk),
+    ]);
 
     chunk.osmData = osmData;
     chunk.elevationData = elevationData;
 
-    // Generate meshes
-
-    // 1. Terrain
-    const terrainResult = generateTerrain(
-      elevationData,
-      chunk.worldX,
-      chunk.worldZ,
-      this.originLat,
-      this.originLng
-    );
-    if (terrainResult.mesh) {
-      chunk.meshGroup.add(terrainResult.mesh);
+    // One shared reference height for the whole world so chunk borders line up
+    if (this.originBaseElevation === null) {
+      const mid = Math.floor(elevationData.length / 2);
+      this.originBaseElevation = elevationData[mid]?.[mid] ?? 0;
     }
-    if (terrainResult.body) {
-      physicsWorld.addBody(terrainResult.body);
-      chunk.physicsBodies.push(terrainResult.body);
+    const base = this.originBaseElevation;
+    const { originLat, originLng } = this;
+
+    // 1. Terrain (+ physics heightfield)
+    const terrain = generateTerrain(elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base);
+    if (terrain.mesh) chunk.meshGroup.add(terrain.mesh);
+    if (terrain.body) {
+      physicsWorld.addBody(terrain.body);
+      chunk.physicsBodies.push(terrain.body);
     }
 
     // 2. Roads
-    if (osmData && osmData.roads.length > 0) {
-      const roadMesh = generateRoads(
-        osmData.roads,
-        elevationData,
-        chunk.worldX,
-        chunk.worldZ,
-        this.originLat,
-        this.originLng
-      );
-      if (roadMesh) {
-        chunk.meshGroup.add(roadMesh);
-      }
+    if (osmData.roads.length > 0) {
+      const roads = generateRoads(osmData.roads, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base);
+      if (roads) chunk.meshGroup.add(roads);
     }
 
     // 3. Buildings
-    if (osmData && osmData.buildings.length > 0) {
-      const buildingMesh = generateBuildings(
-        osmData.buildings,
-        elevationData,
-        chunk.worldX,
-        chunk.worldZ,
-        this.originLat,
-        this.originLng
-      );
-      if (buildingMesh) {
-        chunk.meshGroup.add(buildingMesh);
-      }
+    if (osmData.buildings.length > 0) {
+      const buildings = generateBuildings(osmData.buildings, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base);
+      if (buildings) chunk.meshGroup.add(buildings);
     }
 
     // 4. Water
-    if (osmData && osmData.water.length > 0) {
-      const waterMesh = generateWater(
-        osmData.water,
-        chunk.worldX,
-        chunk.worldZ,
-        this.originLat,
-        this.originLng
-      );
-      if (waterMesh) {
-        chunk.meshGroup.add(waterMesh);
-      }
+    if (osmData.water.length > 0) {
+      const water = generateWater(osmData.water, chunk.worldX, chunk.worldZ, originLat, originLng, elevationData, base);
+      if (water) chunk.meshGroup.add(water);
     }
 
     // 5. Vegetation
-    if (osmData && osmData.greenery.length > 0) {
-      const vegGroup = placeVegetation(
-        osmData.greenery,
-        elevationData,
-        chunk.worldX,
-        chunk.worldZ,
-        this.originLat,
-        this.originLng
-      );
-      if (vegGroup) {
-        chunk.meshGroup.add(vegGroup);
+    if (osmData.greenery.length > 0) {
+      const trees = placeVegetation(osmData.greenery, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base);
+      if (trees) {
+        trees.name = 'vegetation';
+        trees.visible = this.treesEnabled;
+        chunk.meshGroup.add(trees);
       }
     }
 
-    // Set mesh group position to 0,0,0 since coordinates are already world-space
+    // Geometry is generated in world coordinates already
     chunk.meshGroup.position.set(0, 0, 0);
   }
 }
