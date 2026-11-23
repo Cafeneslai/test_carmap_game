@@ -37,6 +37,7 @@ export class Minimap {
       iconAnchor: [8, 8],
     });
     this.marker = L.marker([0, 0], { icon }).addTo(this.map);
+    this.map.on('click', () => this.toggleExpanded()); // touch screens have no M key
   }
 
   /**
@@ -57,6 +58,20 @@ export class Minimap {
     } else {
       this.targetMarker.setLatLng([pos.lat, pos.lng]);
     }
+  }
+
+  /**
+   * M key: grow the minimap into a big map (zoomed out, wheel zoom on), or shrink it back.
+   * The car keeps driving underneath.
+   */
+  toggleExpanded() {
+    if (!this.map) return;
+    this.expanded = !this.expanded;
+    this.container.parentElement.classList.toggle('expanded', this.expanded);
+    this.zoom = this.expanded ? 15 : 16;
+    this.map.scrollWheelZoom[this.expanded ? 'enable' : 'disable']();
+    this.map.invalidateSize();
+    this.lastPanLat = null; // re-centre on the next update
   }
 
   /**
@@ -96,7 +111,9 @@ export class Minimap {
       Math.abs(lng - this.lastPanLng) > 0.0001;
 
     if (shouldPan) {
-      this.map.setView(pos, 16, { animate: false });
+      // Keep the zoom the player picked with the wheel on the big map
+      if (this.expanded && this.lastPanLat !== null) this.zoom = this.map.getZoom();
+      this.map.setView(pos, this.zoom ?? 16, { animate: false });
       this.lastPanLat = lat;
       this.lastPanLng = lng;
       this.lastPanTime = now;

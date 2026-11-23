@@ -275,6 +275,8 @@ export class Game {
         }
       }
 
+      if (this.input.toggleMap) this.hud.minimap?.toggleExpanded();
+
       this._updatePlaying(delta, elapsed);
     } else if (this.state === GAME_STATES.PAUSED) {
       if (this.input.toggleSettings) {

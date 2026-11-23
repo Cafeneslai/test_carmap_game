@@ -145,6 +145,11 @@ export class InputManager {
     return this.justPressed('keyc');
   }
 
+  /** Toggle the big map */
+  get toggleMap() {
+    return this.justPressed('keym');
+  }
+
   /** Toggle settings */
   get toggleSettings() {
     return this.justPressed('escape');
