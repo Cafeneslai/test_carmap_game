@@ -4,159 +4,232 @@
 
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
-import { DEFAULT_BUILDING_HEIGHT, METERS_PER_FLOOR, BUILDING_COLORS } from '../config.js';
+import { DEFAULT_BUILDING_HEIGHT, METERS_PER_FLOOR } from '../config.js';
 import { latLngToMeters } from '../data/GeoUtils.js';
 import { getElevationAt } from './ElevationUtils.js';
-import { getWindowTextures, registerBuildingMaterial } from './NightLights.js';
-
-/** Roof/floor UV in metres that lands on the plain wall margin of the window texture */
-const PLAIN_UV = 0.3;
+import { facadeStyle, getFacadeMaterials, WALL_COLORS, ROOF_FLAT, GROUND_H, WALL_SINK } from './Facades.js';
+import { landcoverType } from '../data/OSMFetcher.js';
 
 /**
- * Generate merged building mesh from OSM building elements
- * 
+ * Generate the buildings of one chunk: walls with a facade picked by building type (ground-floor
+ * band + upper floors), flat or pitched roofs, and one static collider body.
+ *
  * @param {object[]} buildings - OSM way/relation elements with building tag
  * @param {number[][]} elevationData - Chunk elevation grid
- * @param {number} chunkWorldX
- * @param {number} chunkWorldZ
- * @param {number} originLat
- * @param {number} originLng
- * @returns {THREE.Group | null}
+ * @returns {THREE.Group | null} meshes are grouped per shared facade material
  */
-export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWorldZ, originLat, originLng, baseElevation = null) {
+export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWorldZ, originLat, originLng, baseElevation = null, landcover = [], roads = []) {
   const group = new THREE.Group();
-  const geometries = [];
-  const colorArrays = [];
+  const byMaterial = new Map(); // "plain" | "style:upper" | "style:ground" -> geometries
+  const add = (key, geometry) => {
+    if (!geometry) return;
+    if (!byMaterial.has(key)) byMaterial.set(key, []);
+    byMaterial.get(key).push(geometry);
+  };
   // One static body per chunk, one box per building, so the car cannot drive through walls
   const body = new CANNON.Body({ mass: 0 });
+  const tropical = Math.abs(originLat) < 25;
+  // Land-use areas (campus, industrial estate, shopping street) in metres, smallest first
+  const areas = (landcover || []).map((el) => {
+    const pts = el.geometry.map((n) => {
+      const { x, z } = latLngToMeters(n.lat, n.lon, originLat, originLng);
+      return new THREE.Vector2(x, z);
+    });
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const p of pts) { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minZ = Math.min(minZ, p.y); maxZ = Math.max(maxZ, p.y); }
+    return { kind: landcoverType(el.tags || {}), pts, minX, maxX, minZ, maxZ, size: Math.abs(polygonArea(pts)) };
+  }).filter((a) => a.kind && a.kind !== 'amenity=parking').sort((a, b) => a.size - b.size);
+  // Main-street segments: a building within a few metres of one has a shop front
+  const streets = [];
+  for (const road of roads || []) {
+    if (!SHOP_STREETS.has(road.tags?.highway)) continue;
+    const pts = road.geometry.map((n) => latLngToMeters(n.lat, n.lon, originLat, originLng));
+    for (let i = 0; i < pts.length - 1; i++) streets.push([pts[i], pts[i + 1]]);
+  }
+  const nearStreet = (ring) => streets.some(([a, b]) => {
+    const dx = b.x - a.x, dz = b.z - a.z, len2 = dx * dx + dz * dz || 1;
+    return ring.some((p) => {
+      const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.z) * dz) / len2));
+      return Math.hypot(p.x - a.x - t * dx, p.y - a.z - t * dz) < 12; // half a road width + a sidewalk
+    });
+  });
+  const landuseAt = (x, z) => areas.find((a) => x >= a.minX && x <= a.maxX && z >= a.minZ && z <= a.maxZ && insidePolygon(x, z, a.pts))?.kind ?? null;
 
   for (const building of buildings) {
     if (!building.geometry || building.geometry.length < 3) continue;
-
-    // Calculate height
     const height = buildingHeight(building);
 
-    // Convert coordinates to local positions
-    const shapePoints = [];
-    for (const node of building.geometry) {
+    const shapePoints = building.geometry.map((node) => {
       const { x, z } = latLngToMeters(node.lat, node.lon, originLat, originLng);
-      shapePoints.push(new THREE.Vector2(x, z));
+      return new THREE.Vector2(x, z);
+    });
+    const first = shapePoints[0];
+    if (first.distanceTo(shapePoints[shapePoints.length - 1]) > 0.01) shapePoints.push(first.clone());
+    if (shapePoints.length < 4) continue;
+    // Courtyards (inner rings of a building multipolygon)
+    const holes = (building.holes || []).map((ring) => {
+      const pts = ring.map((node) => {
+        const { x, z } = latLngToMeters(node.lat, node.lon, originLat, originLng);
+        return new THREE.Vector2(x, z);
+      });
+      if (pts[0].distanceTo(pts[pts.length - 1]) > 0.01) pts.push(pts[0].clone());
+      return pts;
+    }).filter((pts) => pts.length >= 4);
+
+    let avgX = 0, avgZ = 0;
+    for (const p of shapePoints) { avgX += p.x; avgZ += p.y; }
+    avgX /= shapePoints.length;
+    avgZ /= shapePoints.length;
+    // Walls follow the terrain at every corner; the floor is level with the highest corner (the
+    // street side on a slope), so the shop fronts are never buried. One centre height buried them.
+    const groundAt = (x, z) => getElevationAt(x - chunkWorldX, z - chunkWorldZ, elevationData, baseElevation);
+    let floorY = -Infinity, lowest = Infinity;
+    for (const p of shapePoints) {
+      const y = groundAt(p.x, p.y);
+      floorY = Math.max(floorY, y);
+      lowest = Math.min(lowest, y);
+    }
+    addCollisionBox(body, shapePoints, lowest - WALL_SINK, floorY + height - (lowest - WALL_SINK), holes);
+
+    const area = Math.abs(polygonArea(shapePoints));
+    const rect = orientedRect(shapePoints);
+    const ratio = rect ? Math.max(rect.halfU, rect.halfV) / Math.max(Math.min(rect.halfU, rect.halfV), 0.1) : 1;
+    const style = facadeStyle(building.tags, { floors: height / METERS_PER_FLOOR, area, ratio, tropical, landuse: landuseAt(avgX, avgZ), onStreet: tropical && nearStreet(shapePoints) });
+    const id = idNumber(building.id);
+    const wall = tagColor(building.tags?.['building:colour']) ?? new THREE.Color(pick(WALL_COLORS[style], id));
+
+    for (const [ring, inward] of [[shapePoints, false], ...holes.map((h) => [h, true])]) {
+      // Start each building at a different bay of the 12 m pattern, so neighbours do not match
+      const uStart = (id % Math.round(12 / BAY[style])) * BAY[style];
+      const walls = wallBands(ring, floorY, height, BAY[style], wall, inward, groundAt, uStart);
+      add(`${style}:ground`, walls.ground);
+      add(`${style}:upper`, walls.upper);
     }
 
-    // Ensure the polygon is closed
-    if (shapePoints.length >= 3) {
-      const first = shapePoints[0];
-      const last = shapePoints[shapePoints.length - 1];
-      if (first.distanceTo(last) > 0.01) {
-        shapePoints.push(first.clone());
-      }
-    }
-
-    // Create Three.js Shape
-    try {
-      const shape = new THREE.Shape();
-      // rotateX(-PI/2) below maps shape-Y to world -Z, so feed -Z to land on the right side
-      shape.moveTo(shapePoints[0].x, -shapePoints[0].y);
-      for (let i = 1; i < shapePoints.length; i++) {
-        shape.lineTo(shapePoints[i].x, -shapePoints[i].y);
-      }
-
-      // Extrude
-      const extrudeSettings = {
-        steps: 1,
-        depth: height,
-        bevelEnabled: false,
-      };
-
-      const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
-
-      // Rotate to make extrusion go up (Y axis)
-      geometry.rotateX(-Math.PI / 2);
-
-      // Calculate average local X, Z for elevation sampling
-      let avgX = 0, avgZ = 0;
-      for (const p of shapePoints) {
-        avgX += p.x;
-        avgZ += p.y;
-      }
-      avgX /= shapePoints.length;
-      avgZ /= shapePoints.length;
-      
-      const baseY = getElevationAt(avgX - chunkWorldX, avgZ - chunkWorldZ, elevationData, baseElevation);
-      
-      // Translate to terrain height (sink it slightly to avoid gaps)
-      geometry.translate(0, baseY - 0.5, 0);
-      addCollisionBox(body, shapePoints, baseY - 0.5, height);
-
-      // Pick a color for this building
-      // Deterministic per building so a building drawn by two chunks never flickers
-      const colorHex = BUILDING_COLORS[idNumber(building.id) % BUILDING_COLORS.length];
-      const color = new THREE.Color(colorHex);
-
-      // Add vertex colors; roofs get a UV on the plain part of the window texture
-      const posCount = geometry.attributes.position.count;
-      const uv = geometry.attributes.uv;
-      const colorData = new Float32Array(posCount * 3);
-      for (let i = 0; i < posCount; i++) {
-        // Slight variation for walls vs roof
-        const pos = new THREE.Vector3();
-        pos.fromBufferAttribute(geometry.attributes.position, i);
-        const normal = new THREE.Vector3();
-        normal.fromBufferAttribute(geometry.attributes.normal, i);
-
-        // Darken walls slightly, roof stays original color
-        const isTopFace = Math.abs(normal.y) > 0.9;
-        const factor = isTopFace ? 1.0 : 0.75;
-        if (isTopFace && uv) uv.setXY(i, PLAIN_UV, PLAIN_UV);
-
-        colorData[i * 3] = color.r * factor;
-        colorData[i * 3 + 1] = color.g * factor;
-        colorData[i * 3 + 2] = color.b * factor;
-      }
-
-      geometry.setAttribute('color', new THREE.BufferAttribute(colorData, 3));
-      geometries.push(geometry);
-      const roof = pitchedRoof(building, shapePoints, baseY - 0.5 + height);
-      if (roof) geometries.push(roof);
-
-    } catch (err) {
-      // Skip invalid shapes
-      continue;
+    const roof = holes.length ? null : pitchedRoof(building, shapePoints, floorY + height);
+    if (roof) add('plain', roof);
+    else {
+      const roofColor = tagColor(building.tags?.['roof:colour']) ?? new THREE.Color(pick(ROOF_FLAT[style] ?? ROOF_FLAT.default, id >>> 3));
+      add('plain', flatRoof(shapePoints, floorY + height, roofColor, holes));
     }
   }
 
-  if (geometries.length === 0) return null;
-
-  // Merge all building geometries for performance
-  const mergedGeometry = mergeGeometries(geometries);
-
-  if (!mergedGeometry) return null;
-
-  const textures = getWindowTextures();
-  const material = new THREE.MeshStandardMaterial({
-    vertexColors: true,
-    roughness: 0.8,
-    metalness: 0.1,
-    flatShading: true,
-    map: textures?.map ?? null,
-    emissive: textures ? 0xffffff : 0x000000,
-    emissiveMap: textures?.emissiveMap ?? null,
-  });
-  if (textures) registerBuildingMaterial(material); // windows light up at night
-
-  const mesh = new THREE.Mesh(mergedGeometry, material);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-
-  group.add(mesh);
+  if (byMaterial.size === 0) return null;
+  const materials = getFacadeMaterials();
+  for (const [key, geometries] of byMaterial) {
+    const merged = mergeGeometries(geometries);
+    geometries.forEach((g) => g.dispose());
+    if (!merged) continue;
+    const [style, part] = key.split(':');
+    const mesh = new THREE.Mesh(merged, key === 'plain' ? materials.plain : materials[style][part]);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.userData.sharedMaterial = true; // city-wide materials; Chunk.dispose frees only the geometry
+    mesh.userData.facade = key;
+    group.add(mesh);
+  }
   if (body.shapes.length > 0) group.userData.body = body;
-
-  // Dispose individual geometries
-  for (const geom of geometries) {
-    geom.dispose();
-  }
-
   return group;
+}
+
+const SHOP_STREETS = new Set(['trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'primary_link', 'secondary_link', 'tertiary_link']);
+
+/** Metres between window bays per style: wall lengths are rounded to whole bays so no window is cut */
+const BAY = { generic: 3, house: 6, shophouse: 4, apartment: 3, office: 1.5, industrial: 2, civic: 1.5 };
+const pick = (list, n) => list[n % list.length];
+
+/** OSM colour tag (name or hex) -> Color, or null when missing or unreadable */
+export function tagColor(value) {
+  if (!value) return null;
+  const v = value.trim().toLowerCase();
+  const hex = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/.exec(v);
+  if (hex) return new THREE.Color(`#${hex[1]}`);
+  return THREE.Color.NAMES[v] !== undefined ? new THREE.Color(THREE.Color.NAMES[v]) : null;
+}
+
+/**
+ * Wall quads for a footprint, split into the ground-floor band and the floors above.
+ * The floor is level at floorY; each wall's bottom follows the terrain (groundAt) and reaches
+ * WALL_SINK below it. uv is in metres: u along each wall (stretched to whole bays), v up the band,
+ * with the ground band's v anchored at the floor so its shop fronts sit on the street.
+ */
+export function wallBands(points, floorY, height, bay, color, inward = false, groundAt = null, uStart = 0) {
+  const n = points.length - 1;
+  let area2 = 0;
+  for (let i = 0; i < n; i++) area2 += points[i].x * points[i + 1].y - points[i + 1].x * points[i].y;
+  const bottomAt = (p) => Math.min(groundAt ? groundAt(p.x, p.y) : floorY, floorY) - WALL_SINK;
+  const split = floorY + Math.min(GROUND_H, height);
+  // [bottom y of a corner, top y, v at a given y]
+  const bands = {
+    ground: [bottomAt, () => split, (y) => WALL_SINK + (y - floorY)],
+    upper: height > GROUND_H + 0.3 ? [() => split, () => floorY + height, (y) => y - split] : null,
+  };
+  const out = { ground: null, upper: null };
+  for (const [name, band] of Object.entries(bands)) {
+    if (!band) continue;
+    const [lowAt, highAt, vAt] = band;
+    const pos = [], nor = [], uv = [], col = [];
+    for (let i = 0; i < n; i++) {
+      const a = points[i], b = points[i + 1];
+      const dx = b.x - a.x, dz = b.y - a.y;
+      const len = Math.hypot(dx, dz);
+      if (len < 0.05) continue;
+      // Outward normal (x east, z south): which side is inside depends on the ring's direction
+      // A courtyard ring faces into the courtyard, i.e. towards its own inside
+      const s = (area2 > 0 ? 1 : -1) * (inward ? -1 : 1);
+      const nx = (s * dz) / len, nz = (-s * dx) / len;
+      const uLen = Math.max(1, Math.round(len / bay)) * bay;
+      const u0 = uStart, u1 = uStart + uLen;
+      const ya = lowAt(a), yb = lowAt(b), top = highAt();
+      const A0 = [a.x, ya, a.y], B0 = [b.x, yb, b.y], B1 = [b.x, top, b.y], A1 = [a.x, top, a.y];
+      const va0 = vAt(ya), vb0 = vAt(yb), v1 = vAt(top);
+      // Wind the triangles so they face along the outward normal
+      const ux = B0[0] - A0[0], uz = B0[2] - A0[2]; // along the wall; up is (0, 1, 0)
+      const facing = -uz * nx + ux * nz; // (along x up) . normal
+      const quad = facing > 0
+        ? [[A0, u0, va0], [B0, u1, vb0], [B1, u1, v1], [A0, u0, va0], [B1, u1, v1], [A1, u0, v1]]
+        : [[A0, u0, va0], [B1, u1, v1], [B0, u1, vb0], [A0, u0, va0], [A1, u0, v1], [B1, u1, v1]];
+      for (const [p, u, v] of quad) {
+        pos.push(p[0], p[1], p[2]); nor.push(nx, 0, nz); uv.push(u, v); col.push(color.r, color.g, color.b);
+      }
+    }
+    if (pos.length === 0) continue;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    out[name] = g;
+  }
+  return out;
+}
+
+function insidePolygon(x, z, pts) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const a = pts[i], b = pts[j];
+    if ((a.y > z) !== (b.y > z) && x < ((b.x - a.x) * (z - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+/** Flat roof cap facing up */
+function flatRoof(points, topY, color, holes = []) {
+  try {
+    // rotateX(-PI/2) maps shape-Y to world -Z, so feed -Z to land on the right side
+    const shape = new THREE.Shape(points.map((p) => new THREE.Vector2(p.x, -p.y)));
+    for (const h of holes) shape.holes.push(new THREE.Path(h.map((p) => new THREE.Vector2(p.x, -p.y))));
+    const g = new THREE.ShapeGeometry(shape).toNonIndexed();
+    g.rotateX(-Math.PI / 2);
+    g.translate(0, topY, 0);
+    const count = g.attributes.position.count;
+    const col = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) col.set([color.r, color.g, color.b], i * 3);
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    return g;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -197,7 +270,7 @@ const COLLIDER_CELL = 2; // metres; strips this wide follow the outline of L/U/o
  * inside corner of an L stays open instead of being one big box over a road or yard.
  * @param {THREE.Vector2[]} points footprint in world x / z
  */
-function addCollisionBox(body, points, bottomY, height) {
+function addCollisionBox(body, points, bottomY, height, holes = []) {
   const r = orientedRect(points);
   if (!r || r.halfU < 0.25 || r.halfV < 0.25) return;
   const q = new CANNON.Quaternion();
@@ -211,16 +284,18 @@ function addCollisionBox(body, points, bottomY, height) {
     q,
   );
 
-  if (Math.abs(polygonArea(points)) >= 0.9 * 4 * r.halfU * r.halfV) {
+  if (!holes.length && Math.abs(polygonArea(points)) >= 0.9 * 4 * r.halfU * r.halfV) {
     add(0, 0, r.halfU, r.halfV);
     return;
   }
 
   // Footprint in (u, v) around the rectangle centre, for point-in-polygon tests
-  const local = points.map((p) => {
+  const toLocal = (ring) => ring.map((p) => {
     const dx = p.x - r.cx, dz = p.y - r.cz;
     return { u: dx * r.ux + dz * r.uz, v: dx * vx + dz * vz };
   });
+  const local = toLocal(points);
+  const localHoles = holes.map(toLocal); // courtyards stay open
   // Capped so a huge irregular building (a stadium, a mall) stays at most ~40 strips
   const nu = Math.min(40, Math.max(1, Math.round((2 * r.halfU) / COLLIDER_CELL)));
   const nv = Math.min(40, Math.max(1, Math.round((2 * r.halfV) / COLLIDER_CELL)));
@@ -229,7 +304,8 @@ function addCollisionBox(body, points, bottomY, height) {
     const u = -r.halfU + (i + 0.5) * du;
     let runStart = -1;
     for (let j = 0; j <= nv; j++) {
-      const inside = j < nv && insideLocal(local, u, -r.halfV + (j + 0.5) * dv);
+      const vj = -r.halfV + (j + 0.5) * dv;
+      const inside = j < nv && insideLocal(local, u, vj) && !localHoles.some((h) => insideLocal(h, u, vj));
       if (inside && runStart < 0) runStart = j;
       if (!inside && runStart >= 0) {
         const v0 = -r.halfV + runStart * dv, v1 = -r.halfV + j * dv;
@@ -317,10 +393,10 @@ export function pitchedRoof(building, points, topY) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   geometry.computeVertexNormals();
-  const [cr, cg, cb] = ROOF_COLORS[idNumber(building.id) % ROOF_COLORS.length];
+  const tagged = tagColor(tags['roof:colour']);
+  const [cr, cg, cb] = tagged ? [tagged.r, tagged.g, tagged.b] : ROOF_COLORS[idNumber(building.id) % ROOF_COLORS.length];
   const count = pos.length / 3;
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(new Array(count).fill([cr, cg, cb]).flat(), 3));
-  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(new Array(count * 2).fill(PLAIN_UV), 2));
   return geometry;
 }
 

@@ -26,7 +26,8 @@ import { CHUNK_SIZE } from '../src/config.js';
 import { pickCheckpoint, paceSecondsPerKm } from '../src/core/Mission.js';
 import { dashPolyline, findJunctions, cutPolyline, sidewalkSides } from '../src/world/RoadGenerator.js';
 import { lampPositions, generateStreetLamps } from '../src/world/StreetLamps.js';
-import { buildingHeight, pitchedRoof } from '../src/world/BuildingGenerator.js';
+import { buildingHeight, pitchedRoof, wallBands, tagColor } from '../src/world/BuildingGenerator.js';
+import { facadeStyle } from '../src/world/Facades.js';
 import { signalState, signalHeads, CYCLE_SECONDS } from '../src/world/TrafficLights.js';
 import { TrafficManager } from '../src/world/Traffic.js';
 import { isLeftHandTraffic } from '../src/data/DrivingSide.js';
@@ -226,6 +227,35 @@ section('Realistic city: markings, lamps, building heights');
   check('untagged buildings get varied heights (2-5 floors), not one flat slab', guessed.size === 4 && Math.min(...guessed) === 6 && Math.max(...guessed) === 15, [...guessed].join(','));
   const ovHeights = new Set(['ov_1972641f-316b', 'ov_08b2c4d1-aa01', 'ov_5f00e1b2-77c3', 'ov_c3d4e5f6-0912', 'ov_7a7a7a7a-1234', 'ov_0000ffff-9999'].map((id) => buildingHeight({ id, tags: { building: 'yes' } })));
   check('Overture buildings (text ids) also get varied heights, not all 2 floors', ovHeights.size >= 3, [...ovHeights].join(','));
+  // Facades by building type. Walls must face outwards whichever way the OSM ring runs.
+  const sq = [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]].map(([x, z]) => new THREE.Vector2(x, z));
+  for (const ringPts of [sq, [...sq].reverse()]) {
+    const { ground, upper } = wallBands(ringPts, 0, 12, 3, new THREE.Color(1, 1, 1));
+    let outward = 0, faces = 0;
+    for (const g of [ground, upper]) {
+      const p = g.attributes.position;
+      for (let i = 0; i < p.count; i += 3) {
+        const a = new THREE.Vector3().fromBufferAttribute(p, i), b = new THREE.Vector3().fromBufferAttribute(p, i + 1), c = new THREE.Vector3().fromBufferAttribute(p, i + 2);
+        const n = new THREE.Vector3().crossVectors(b.clone().sub(a), c.clone().sub(a));
+        const centre = a.clone().add(b).add(c).divideScalar(3).sub(new THREE.Vector3(5, (a.y + b.y + c.y) / 3, 5));
+        faces++;
+        if (n.dot(centre) > 0) outward++;
+      }
+    }
+    check(`walls face outwards (${ringPts === sq ? 'one' : 'other'} ring direction) with a ground-floor band`, outward === faces && ground && upper, `${outward}/${faces}`);
+  }
+  const style = (tags, floors, area = 300, ratio = 1.5, tropical = true) => facadeStyle(tags, { floors, area, ratio, tropical });
+  check('facade styles: shophouse, condo, office tower, warehouse, school, house',
+    style({ building: 'retail' }, 4) === 'shophouse' && style({ building: 'apartments' }, 20) === 'apartment' &&
+    style({ building: 'yes' }, 30) === 'office' && style({ building: 'warehouse' }, 2) === 'industrial' &&
+    style({ building: 'school' }, 3) === 'civic' && style({ building: 'yes' }, 2, 120) === 'house');
+  check('an untagged narrow 3-floor row in Thailand is a shophouse; in London it is not',
+    style({ building: 'yes' }, 3, 400, 4) === 'shophouse' && style({ building: 'yes' }, 3, 400, 4, false) !== 'shophouse');
+  check('untagged footprints take the style of the area they stand in (campus -> school block, estate -> warehouse)',
+    facadeStyle({ building: 'yes' }, { floors: 3, area: 600, ratio: 3, tropical: true, landuse: 'amenity=university' }) === 'civic' &&
+    facadeStyle({ building: 'yes' }, { floors: 1, area: 2000, ratio: 2, tropical: true, landuse: 'landuse=industrial' }) === 'industrial');
+  check('building:colour / roof:colour tags are read (names and hex), junk is ignored',
+    tagColor('red')?.getHex() === 0xff0000 && tagColor('#00ff00')?.getHex() === 0x00ff00 && tagColor('ff8800') !== null && tagColor('not a colour') === null && tagColor('blorange') === null);
   check('checkpoint pace is seconds per km', paceSecondsPerKm(30, 300) === 100);
 
   // Bug: car drove straight through lamp posts
@@ -374,6 +404,13 @@ section('OSM parsing and spawn point');
     `${rel.greenery.length} area(s), ${forest?.geometry.length} points, ${forest?.holes.length} hole(s)`);
   check('a relation with ways outside the download is flagged for a full fetch',
     parseOsmXml(relXml('<member type="way" ref="999" role="outer"/>')).partial[0]?.id === '40');
+  // Buildings with courtyards (OSM multipolygon): walls inside the courtyard face into it, the car can drive in
+  const court = parseOsmXml(relXml().replace('<tag k="landuse" v="forest"/>', '<tag k="building" v="yes"/>')).buildings[0];
+  const courtGroup = generateBuildings([court], flat(), 0, 0, ORIGIN.lat, ORIGIN.lng, 0);
+  const cw = new CANNON.World();
+  cw.addBody(courtGroup.userData.body);
+  const blockedAt = (x, z) => { const res = new CANNON.RaycastResult(); cw.raycastClosest(new CANNON.Vec3(x, 50, z), new CANNON.Vec3(x, -5, z), {}, res); return res.hasHit; };
+  check('a building with a courtyard: solid around it, the courtyard stays open', !!court?.holes?.length && blockedAt(100, 100) && !blockedAt(0, 0));
 
   const trees = [0, 1].map((cx) => placeVegetation([forest], flat(), cx * CHUNK_SIZE, 0, ORIGIN.lat, ORIGIN.lng, 0));
   const treePoints = (g) => (g?.children || []).flatMap((inst) => Array.from({ length: inst.count }, (_, i) => ({

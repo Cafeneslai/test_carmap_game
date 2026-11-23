@@ -40,16 +40,6 @@ export const ROAD_WIDTHS = {
 // ====== Buildings ======
 export const DEFAULT_BUILDING_HEIGHT = 9;   // meters (3 floors)
 export const METERS_PER_FLOOR = 3;
-export const BUILDING_COLORS = [
-  0xf5f0e8,  // warm white
-  0xe8dcc8,  // beige
-  0xd4cfc4,  // light gray
-  0xc8d8e8,  // light blue
-  0xe0d4c0,  // sand
-  0xd8d0c0,  // cream
-  0xc0c8d0,  // steel blue-gray
-  0xe8e0d0,  // ivory
-];
 
 // ====== Vegetation ======
 export const TREE_DENSITY = 0.015;        // trees per square meter in forest

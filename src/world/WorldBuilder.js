@@ -20,7 +20,7 @@ import { satelliteGround } from './SatelliteGround.js';
 
 // Bump when the shape or orientation of cached data changes. v3: elevation comes from the shared
 // world lattice (ElevationField), rows run north->south, buildings belong to a single chunk.
-const CACHE_VERSION = 'v8'; // v8: OSM street trees (natural=tree, tree_row); v7: Overture buildings where OSM has none; v6: multipolygon relations (big forests, lakes with islands); v5: landcover; v4: signals
+const CACHE_VERSION = 'v9'; // v9: buildings with courtyards (multipolygon); v8: OSM street trees (natural=tree, tree_row); v7: Overture buildings where OSM has none; v6: multipolygon relations (big forests, lakes with islands); v5: landcover; v4: signals
 
 function flatGrid() {
   return Array.from({ length: TERRAIN_RESOLUTION }, () => new Array(TERRAIN_RESOLUTION).fill(0));
@@ -136,7 +136,7 @@ export class WorldBuilder {
 
     // 3. Buildings
     if (osmData.buildings.length > 0) {
-      const buildings = generateBuildings(osmData.buildings, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base);
+      const buildings = generateBuildings(osmData.buildings, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base, osmData.landcover, osmData.roads);
       if (buildings) {
         chunk.meshGroup.add(buildings);
         const body = buildings.userData.body;

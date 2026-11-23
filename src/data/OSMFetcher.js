@@ -115,9 +115,9 @@ function insideRing(pt, ring) {
  */
 function classifyRelation(rel, out) {
   const tags = rel.tags || {};
-  // Roads and buildings have no hole support, so their relations are left out
-  if (tags.type !== 'multipolygon' || tags.highway || tags.building) return true;
-  if (!landcoverType(tags) && tags.natural !== 'water' && !tags.waterway) return true;
+  // Road areas are not drawn; buildings with courtyards are (walls inside the courtyard too)
+  if (tags.type !== 'multipolygon' || tags.highway) return true;
+  if (!landcoverType(tags) && tags.natural !== 'water' && !tags.waterway && !tags.building) return true;
   const outers = joinRings(rel.members.filter((m) => m.role !== 'inner').map((m) => m.geometry));
   const inners = joinRings(rel.members.filter((m) => m.role === 'inner').map((m) => m.geometry));
   outers.forEach((ring, i) => {
@@ -359,7 +359,7 @@ async function completeRelations(parsed) {
 
 async function fetchOverpassBox(bbox) {
   const b = bboxToOverpass(bbox);
-  const query = `[out:json][timeout:8];(way["highway"](${b});way["building"](${b});way["natural"="water"](${b});way["waterway"](${b});way["landuse"~"forest|grass"](${b});way["leisure"~"park|garden"](${b});node["highway"="traffic_signals"](${b});node["natural"="tree"](${b});way["natural"="tree_row"](${b});way["landuse"](${b});way["natural"~"wood|scrub|grassland|heath|beach|sand|bare_rock|scree|wetland|mud"](${b});way["leisure"~"pitch|golf_course|playground|sports_centre|stadium|track"](${b});way["amenity"~"parking|school|university|hospital|college"](${b});rel["type"="multipolygon"]["natural"~"water|wood|scrub|grassland|heath|beach|sand|wetland"](${b});rel["type"="multipolygon"]["landuse"](${b});rel["type"="multipolygon"]["leisure"~"park|garden|golf_course"](${b}););out geom;`;
+  const query = `[out:json][timeout:8];(way["highway"](${b});way["building"](${b});way["natural"="water"](${b});way["waterway"](${b});way["landuse"~"forest|grass"](${b});way["leisure"~"park|garden"](${b});node["highway"="traffic_signals"](${b});node["natural"="tree"](${b});way["natural"="tree_row"](${b});way["landuse"](${b});way["natural"~"wood|scrub|grassland|heath|beach|sand|bare_rock|scree|wetland|mud"](${b});way["leisure"~"pitch|golf_course|playground|sports_centre|stadium|track"](${b});way["amenity"~"parking|school|university|hospital|college"](${b});rel["type"="multipolygon"]["natural"~"water|wood|scrub|grassland|heath|beach|sand|wetland"](${b});rel["type"="multipolygon"]["landuse"](${b});rel["type"="multipolygon"]["leisure"~"park|garden|golf_course"](${b});rel["type"="multipolygon"]["building"](${b}););out geom;`;
 
   for (let attempt = 0; attempt < OVERPASS_ENDPOINTS.length; attempt++) {
     const index = (overpassIndex + attempt) % OVERPASS_ENDPOINTS.length;

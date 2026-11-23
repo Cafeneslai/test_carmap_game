@@ -44,61 +44,6 @@ export function setNightLevel(night) {
   lampGlowMaterial.opacity = 0.55 * night;
 }
 
-// -------------------------------------------------------------------------------------------
-// Window textures for building walls: 4 x 4 windows per tile, one window per 3 m floor
-// -------------------------------------------------------------------------------------------
-
-export const WINDOW_TILE_METERS = 12;
-let windowTextures = null;
-
-/** @returns {{ map: THREE.Texture, emissiveMap: THREE.Texture } | null} null outside the browser */
-export function getWindowTextures() {
-  if (!hasDom) return null;
-  if (windowTextures) return windowTextures;
-
-  const size = 256, cell = size / 4;
-  const wall = document.createElement('canvas');
-  const glow = document.createElement('canvas');
-  wall.width = wall.height = glow.width = glow.height = size;
-  const w = wall.getContext('2d');
-  const g = glow.getContext('2d');
-  w.fillStyle = '#ffffff'; // multiplied by the building's own colour
-  w.fillRect(0, 0, size, size);
-  g.fillStyle = '#000000';
-  g.fillRect(0, 0, size, size);
-
-  // Fixed pattern so the city looks the same every visit
-  const lit = [1, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0];
-  for (let row = 0; row < 4; row++) {
-    for (let col = 0; col < 4; col++) {
-      // 1.2 x 1.3 m windows on a 3 m grid, light sky-reflecting glass with a thin frame
-      const x = col * cell + cell * 0.3, y = row * cell + cell * 0.25;
-      const ww = cell * 0.4, wh = cell * 0.43;
-      w.fillStyle = '#5d6670';
-      w.fillRect(x - 2, y - 2, ww + 4, wh + 4);
-      w.fillStyle = '#a9bccd';
-      w.fillRect(x, y, ww, wh);
-      w.fillStyle = '#8a8f96';
-      w.fillRect(x, y + wh, ww, 3); // sill
-      if (lit[row * 4 + col]) {
-        g.fillStyle = row % 2 ? '#ffd890' : '#fff0c8';
-        g.fillRect(x, y, ww, wh);
-      }
-    }
-  }
-
-  const make = (canvas, srgb) => {
-    const t = new THREE.CanvasTexture(canvas);
-    t.wrapS = t.wrapT = THREE.RepeatWrapping;
-    t.repeat.set(1 / WINDOW_TILE_METERS, 1 / WINDOW_TILE_METERS);
-    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
-    t.anisotropy = 4;
-    return t;
-  };
-  windowTextures = { map: make(wall, true), emissiveMap: make(glow, true) };
-  return windowTextures;
-}
-
 function radialTexture() {
   const c = document.createElement('canvas');
   c.width = c.height = 64;

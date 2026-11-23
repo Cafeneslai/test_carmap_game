@@ -79,7 +79,8 @@ export class Chunk {
       if (child.userData.ownTexture) child.material.map?.dispose(); // per-chunk painted ground
       if (child instanceof THREE.Mesh && !child.userData.shared) {
         if (child.geometry) child.geometry.dispose();
-        if (child.material) {
+        // Building facades use materials shared by the whole city; only the geometry is per chunk
+        if (child.material && !child.userData.sharedMaterial) {
           if (Array.isArray(child.material)) {
             child.material.forEach(m => m.dispose());
           } else {
