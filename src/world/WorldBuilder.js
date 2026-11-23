@@ -15,10 +15,11 @@ import { placeVegetation } from './VegetationPlacer.js';
 import { generateStreetLamps } from './StreetLamps.js';
 import { generateTrafficLights } from './TrafficLights.js';
 import { isLeftHandTraffic } from '../data/DrivingSide.js';
+import { paintGround, getGroundDetailTexture } from './GroundPainter.js';
 
 // Bump when the shape or orientation of cached data changes. v3: elevation comes from the shared
 // world lattice (ElevationField), rows run north->south, buildings belong to a single chunk.
-const CACHE_VERSION = 'v4'; // v4: OSM data also carries traffic signal nodes
+const CACHE_VERSION = 'v5'; // v5: OSM data also carries landcover areas (v4: traffic signals)
 
 function flatGrid() {
   return Array.from({ length: TERRAIN_RESOLUTION }, () => new Array(TERRAIN_RESOLUTION).fill(0));
@@ -49,7 +50,7 @@ export class WorldBuilder {
       return data;
     } catch (err) {
       console.warn('OSM data failed for chunk', chunk.key, err);
-      return { roads: [], buildings: [], water: [], greenery: [], signals: [] };
+      return { roads: [], buildings: [], water: [], greenery: [], signals: [], landcover: [] };
     }
   }
 
@@ -107,7 +108,8 @@ export class WorldBuilder {
     const { originLat, originLng } = this;
 
     // 1. Terrain (+ physics heightfield)
-    const terrain = generateTerrain(elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base);
+    const ground = paintGround(osmData.landcover, chunk.worldX, chunk.worldZ, originLat, originLng);
+    const terrain = generateTerrain(elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base, ground, getGroundDetailTexture());
     if (terrain.mesh) chunk.meshGroup.add(terrain.mesh);
     if (terrain.body) {
       physicsWorld.addBody(terrain.body);

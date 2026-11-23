@@ -76,6 +76,7 @@ export class Chunk {
     // Dispose geometries and materials
     this.meshGroup.traverse((child) => {
       if (child.isInstancedMesh) child.dispose(); // frees the per-chunk instance buffers only
+      if (child.userData.ownTexture) child.material.map?.dispose(); // per-chunk painted ground
       if (child instanceof THREE.Mesh && !child.userData.shared) {
         if (child.geometry) child.geometry.dispose();
         if (child.material) {

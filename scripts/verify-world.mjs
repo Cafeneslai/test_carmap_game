@@ -16,7 +16,8 @@ import { generateBuildings } from '../src/world/BuildingGenerator.js';
 import { generateWater } from '../src/world/WaterGenerator.js';
 import { getElevationAt } from '../src/world/ElevationUtils.js';
 import { metersToLatLng } from '../src/data/GeoUtils.js';
-import { parseOsmXml, findSpawnPoint } from '../src/data/OSMFetcher.js';
+import { parseOsmXml, findSpawnPoint, landcoverType } from '../src/data/OSMFetcher.js';
+import { GROUND_COLORS } from '../src/world/GroundPainter.js';
 import { ElevationField } from '../src/data/ElevationField.js';
 import { headingToBearingDeg } from '../src/ui/compass.js';
 import { CHUNK_SIZE } from '../src/config.js';
@@ -319,6 +320,15 @@ section('OSM parsing and spawn point');
     <way id="12"><nd ref="5"/><nd ref="6"/><nd ref="7"/><nd ref="5"/><tag k="building" v="yes"/></way>
   </osm>`;
   const parsed = parseOsmXml(xml);
+
+  // Ground painting: land cover areas are parsed and every kind we parse has a colour
+  const lc = parseOsmXml(`<osm><node id="1" lat="0" lon="0"/><node id="2" lat="0" lon="0.001"/><node id="3" lat="0.001" lon="0"/>
+    <way id="20"><nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="1"/><tag k="landuse" v="farmland"/></way>
+    <way id="21"><nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="1"/><tag k="natural" v="beach"/></way>
+    <way id="22"><nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="1"/><tag k="landuse" v="forest"/></way></osm>`);
+  check('land cover (fields, beach, forest) is parsed for the ground; forests still get trees', lc.landcover.length === 3 && lc.greenery.length === 1);
+  const kinds = ['landuse=residential', 'landuse=farmland', 'natural=beach', 'amenity=parking', 'leisure=pitch', 'natural=wood'];
+  check('every land cover kind has a ground colour', kinds.every((k) => GROUND_COLORS[k]) && landcoverType({ landuse: 'farmland' }) === 'landuse=farmland' && landcoverType({ building: 'yes' }) === null);
   check('parses roads and buildings', parsed.roads.length === 2 && parsed.buildings.length === 1, `${parsed.roads.length} roads, ${parsed.buildings.length} buildings`);
   const spawn = findSpawnPoint(parsed.roads, ORIGIN.lat, ORIGIN.lng);
   check('spawn ignores footways and picks the drivable road', spawn && spawn.name.startsWith('Main'), spawn ? `${spawn.name}` : 'none');

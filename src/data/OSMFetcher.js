@@ -48,6 +48,26 @@ function computeBounds(geometry) {
   return { minLat, maxLat, minLon, maxLon };
 }
 
+const LANDCOVER_KEYS = {
+  landuse: new Set(['residential', 'commercial', 'retail', 'industrial', 'farmland', 'farmyard', 'meadow', 'grass',
+    'forest', 'orchard', 'vineyard', 'cemetery', 'construction', 'brownfield', 'railway', 'military', 'recreation_ground',
+    'village_green', 'allotments', 'aquaculture', 'salt_pond', 'plant_nursery', 'greenfield', 'religious']),
+  natural: new Set(['wood', 'scrub', 'grassland', 'heath', 'beach', 'sand', 'bare_rock', 'scree', 'wetland', 'mud']),
+  leisure: new Set(['park', 'garden', 'pitch', 'golf_course', 'playground', 'sports_centre', 'stadium', 'track']),
+  amenity: new Set(['parking', 'school', 'university', 'hospital', 'college']),
+};
+
+/**
+ * The ground-cover kind of an area, e.g. "landuse=farmland", or null when it has none we paint.
+ * shortcut: multipolygon relations (big forests, lakes with islands) are not parsed yet; only closed ways.
+ */
+export function landcoverType(tags) {
+  for (const [key, values] of Object.entries(LANDCOVER_KEYS)) {
+    if (values.has(tags[key])) return `${key}=${tags[key]}`;
+  }
+  return null;
+}
+
 /** Sort one way (OSM API) or element (Overpass) into the category the generators expect. */
 function classify(element, out) {
   const tags = element.tags;
@@ -57,6 +77,10 @@ function classify(element, out) {
   }
   const geom = element.geometry;
   if (!tags || !geom) return;
+
+  // What covers the ground (fields, beach, parking...) is painted onto the terrain; it is an extra
+  // category, so a forest is both painted and planted with trees
+  if (geom.length >= 3 && landcoverType(tags)) out.landcover.push(element);
 
   if (tags.highway && geom.length >= 2) {
     out.roads.push(element);
@@ -84,7 +108,7 @@ export function parseOsmXml(xml) {
     nodes.set(match[1], { lat: parseFloat(match[2]), lon: parseFloat(match[3]) });
   }
 
-  const out = { roads: [], buildings: [], water: [], greenery: [], signals: [] };
+  const out = { roads: [], buildings: [], water: [], greenery: [], signals: [], landcover: [] };
 
   // Traffic lights are tagged nodes: <node id lat lon ...> <tag k="highway" v="traffic_signals"/> </node>
   // ([^>]*[^/]> skips self-closing <node .../> so a match never runs on into the next node)
@@ -122,8 +146,8 @@ export function parseOsmXml(xml) {
 }
 
 function merge(parts) {
-  const seen = { roads: new Set(), buildings: new Set(), water: new Set(), greenery: new Set(), signals: new Set() };
-  const out = { roads: [], buildings: [], water: [], greenery: [], signals: [] };
+  const seen = { roads: new Set(), buildings: new Set(), water: new Set(), greenery: new Set(), signals: new Set(), landcover: new Set() };
+  const out = { roads: [], buildings: [], water: [], greenery: [], signals: [], landcover: [] };
   for (const part of parts) {
     for (const key of Object.keys(out)) {
       for (const el of part[key] || []) {
@@ -137,7 +161,7 @@ function merge(parts) {
 }
 
 function withBounds(parsed) {
-  for (const key of ['roads', 'buildings', 'water', 'greenery']) {
+  for (const key of ['roads', 'buildings', 'water', 'greenery', 'landcover']) {
     for (const el of parsed[key]) {
       if (!el.bounds || el.bounds.minLat === undefined) el.bounds = computeBounds(el.geometry);
     }
@@ -199,7 +223,7 @@ async function fetchOsmBox(bbox, timeoutMs, depth = 0) {
 
 async function fetchOverpassBox(bbox) {
   const b = bboxToOverpass(bbox);
-  const query = `[out:json][timeout:8];(way["highway"](${b});way["building"](${b});way["natural"="water"](${b});way["waterway"](${b});way["landuse"~"forest|grass"](${b});way["leisure"~"park|garden"](${b});node["highway"="traffic_signals"](${b}););out geom;`;
+  const query = `[out:json][timeout:8];(way["highway"](${b});way["building"](${b});way["natural"="water"](${b});way["waterway"](${b});way["landuse"~"forest|grass"](${b});way["leisure"~"park|garden"](${b});node["highway"="traffic_signals"](${b});way["landuse"](${b});way["natural"~"wood|scrub|grassland|heath|beach|sand|bare_rock|scree|wetland|mud"](${b});way["leisure"~"pitch|golf_course|playground|sports_centre|stadium|track"](${b});way["amenity"~"parking|school|university|hospital|college"](${b}););out geom;`;
 
   for (let attempt = 0; attempt < OVERPASS_ENDPOINTS.length; attempt++) {
     const index = (overpassIndex + attempt) % OVERPASS_ENDPOINTS.length;
@@ -217,7 +241,7 @@ async function fetchOverpassBox(bbox) {
 
       const json = await response.json();
       overpassIndex = index;
-      const out = { roads: [], buildings: [], water: [], greenery: [], signals: [] };
+      const out = { roads: [], buildings: [], water: [], greenery: [], signals: [], landcover: [] };
       for (const el of json.elements || []) classify(el, out);
       return out;
     } catch {
@@ -249,13 +273,14 @@ function selectForChunk(parsed, bbox) {
   const roads = parsed.roads.filter((el) => intersects(el.bounds, bbox, ROAD_MARGIN_DEG));
   const water = parsed.water.filter((el) => intersects(el.bounds, bbox));
   const greenery = parsed.greenery.filter((el) => intersects(el.bounds, bbox));
+  const landcover = (parsed.landcover || []).filter((el) => intersects(el.bounds, bbox));
   const buildings = parsed.buildings.filter((el) => {
     const lat = (el.bounds.minLat + el.bounds.maxLat) / 2;
     const lon = (el.bounds.minLon + el.bounds.maxLon) / 2;
     return lat >= bbox.south && lat < bbox.north && lon >= bbox.west && lon < bbox.east;
   });
   const signals = (parsed.signals || []).filter((n) => n.lat >= bbox.south && n.lat < bbox.north && n.lon >= bbox.west && n.lon < bbox.east);
-  return { roads, buildings, water, greenery, signals };
+  return { roads, buildings, water, greenery, signals, landcover };
 }
 
 function containsBox(outer, inner) {
@@ -415,5 +440,5 @@ function generateProceduralFallback(bbox) {
     });
   });
 
-  return withBounds({ roads, buildings, water: [], greenery: [], signals: [] });
+  return withBounds({ roads, buildings, water: [], greenery: [], signals: [], landcover: [] });
 }

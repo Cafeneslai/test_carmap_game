@@ -16,7 +16,12 @@ import { CHUNK_SIZE, TERRAIN_RESOLUTION, TERRAIN_Y_SCALE } from '../config.js';
  * @param {number} originLng
  * @returns {{ mesh: THREE.Mesh | null, body: CANNON.Body | null }}
  */
-export function generateTerrain(elevationGrid, chunkWorldX, chunkWorldZ, originLat, originLng, baseElevation = null) {
+/**
+ * @param {THREE.Texture | null} [groundTexture] painted land cover (GroundPainter); without it the
+ *   terrain is coloured by height only (also what the Node verify script gets)
+ * @param {THREE.Texture | null} [detailTexture] shared fine-grain bump map, sampled through uv1
+ */
+export function generateTerrain(elevationGrid, chunkWorldX, chunkWorldZ, originLat, originLng, baseElevation = null, groundTexture = null, detailTexture = null) {
   if (!elevationGrid || elevationGrid.length === 0) {
     return { mesh: null, body: null };
   }
@@ -45,10 +50,11 @@ export function generateTerrain(elevationGrid, chunkWorldX, chunkWorldZ, originL
     baseElevation = elevationGrid[centerRow]?.[centerCol] ?? 0;
   }
 
-  // Color palette for terrain
-  const colorLow = new THREE.Color(0x4a7c3f);   // green grass
-  const colorMid = new THREE.Color(0x8b7d5b);   // brown earth
-  const colorHigh = new THREE.Color(0x9e9585);   // gray rock
+  // Color palette for terrain. With a painted ground texture the vertex colour only tints it
+  // (slightly browner and greyer up high), so it stays close to white.
+  const colorLow = new THREE.Color(groundTexture ? 0xffffff : 0x4a7c3f);   // green grass
+  const colorMid = new THREE.Color(groundTexture ? 0xf2e8d8 : 0x8b7d5b);   // brown earth
+  const colorHigh = new THREE.Color(groundTexture ? 0xd8d6d2 : 0x9e9585);  // gray rock
 
   const elevRange = Math.max(maxElev - minElev, 1);
 
@@ -71,8 +77,10 @@ export function generateTerrain(elevationGrid, chunkWorldX, chunkWorldZ, originL
       color.lerpColors(colorMid, colorHigh, (t - 0.5) * 2);
     }
 
-    // Add slight random noise to break up flat colors
-    const noise = (Math.random() - 0.5) * 0.04;
+ 
+    // Slight noise to break up flat colors; from the world position, so chunk edges match
+    const wx = positions.getX(i) + chunkWorldX, wz = positions.getZ(i) + chunkWorldZ;
+    const noise = groundTexture ? 0 : ((Math.sin(wx * 12.9898 + wz * 78.233) * 43758.5453) % 1) * 0.02;
     
     colors[i * 3] = color.r + noise;
     colors[i * 3 + 1] = color.g + noise;
@@ -82,14 +90,26 @@ export function generateTerrain(elevationGrid, chunkWorldX, chunkWorldZ, originL
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geometry.computeVertexNormals();
 
+  // uv1 in world metres / 3: the detail bump repeats every 3 m and lines up across chunks
+  const uv1 = new Float32Array(positions.count * 2);
+  for (let i = 0; i < positions.count; i++) {
+    uv1[i * 2] = (positions.getX(i) + chunkWorldX) / 3;
+    uv1[i * 2 + 1] = (positions.getZ(i) + chunkWorldZ) / 3;
+  }
+  geometry.setAttribute('uv1', new THREE.BufferAttribute(uv1, 2));
+
   const material = new THREE.MeshStandardMaterial({
     vertexColors: true,
-    roughness: 0.9,
+    roughness: 1,
     metalness: 0.0,
     flatShading: false,
+    map: groundTexture,
+    bumpMap: detailTexture,
+    bumpScale: 1.5,
   });
 
   const mesh = new THREE.Mesh(geometry, material);
+  mesh.userData.ownTexture = !!groundTexture; // painted for this chunk only: free it with the chunk
   mesh.position.set(chunkWorldX, 0, chunkWorldZ);
   mesh.receiveShadow = true;
 
