@@ -3,6 +3,7 @@
  */
 
 import * as THREE from 'three';
+import * as CANNON from 'cannon-es';
 import { ROAD_WIDTHS, ROAD_Y_OFFSET } from '../config.js';
 import { latLngToMeters } from '../data/GeoUtils.js';
 import { getElevationAt } from './ElevationUtils.js';
@@ -34,6 +35,7 @@ export function cutPolyline(points, cum, stops, clear) {
  */
 export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, originLat, originLng, baseElevation = null) {
   const geometries = [];
+  const deckBody = new CANNON.Body({ mass: 0 }); // bridge decks and railings above the ground
   const junctions = findJunctions(roads);
   // Each chunk draws only the parts of a road inside it (plus a small overlap to hide the seam).
   // Drawing whole roads made every chunk repeat them, with heights clamped to its own grid outside it.
@@ -59,10 +61,16 @@ export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, or
     const inside = insideIntervals(points, cum, rect);
     if (inside.length === 0) continue;
 
+    // A bridge over water rises off the banks so it clears the water, with sides, railings and pillars
+    const liftAt = markBridge(road, points) ? (x, z) => bridgeLiftAt(road, x, z) : null;
+    const groundAt = (x, z) => getElevationAt(x - chunkWorldX, z - chunkWorldZ, elevationData, baseElevation);
+
     // Road surface
     for (const [a, b] of inside) {
-      const roadGeom = createRoadStrip(extract(points, cum, a, b), width / 2, elevationData, chunkWorldX, chunkWorldZ, baseElevation);
+      const piece = extract(points, cum, a, b);
+      const roadGeom = createRoadStrip(piece, width / 2, elevationData, chunkWorldX, chunkWorldZ, baseElevation, 0, 0, liftAt);
       if (roadGeom) geometries.push(roadGeom);
+      if (liftAt) bridgeStructure(piece, width / 2, groundAt, liftAt, inChunk, geometries, deckBody);
     }
 
     // Painted markings, sidewalks and crosswalks; all of them stop short of junctions
@@ -71,7 +79,7 @@ export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, or
     if (!major && !minor) continue;
 
     const mark = (polyline, halfWidth, color, offset = 0, lift = 0.04) => {
-      const g = createRoadStrip(polyline, halfWidth, elevationData, chunkWorldX, chunkWorldZ, baseElevation, lift, offset);
+      const g = createRoadStrip(polyline, halfWidth, elevationData, chunkWorldX, chunkWorldZ, baseElevation, lift, offset, liftAt);
       if (g) geometries.push(paint(g, color));
     };
     const oneway = road.tags?.oneway === 'yes' || highwayType === 'motorway';
@@ -132,8 +140,106 @@ export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, or
 
   const mesh = new THREE.Mesh(mergedGeometry, material);
   mesh.receiveShadow = true;
+  if (deckBody.shapes.length) mesh.userData.body = deckBody;
 
   return mesh;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Bridges
+
+const BRIDGE_LIFT = 2.5;  // metres the middle of a bridge over water stands above the banks
+const BRIDGE_GRADE = 0.1; // ramp slope off each bank
+const DECK_DEPTH = 1.2;
+const RAIL_HEIGHT = 1;
+const PILLAR_SPACING = 20;
+const CONCRETE = [0.42, 0.41, 0.39];
+const RAIL = [0.62, 0.62, 0.6];
+
+/**
+ * Gives an OSM bridge over water (road.overWater, set by OSMFetcher) road.bridgeDeck = { a, b, lift }:
+ * its two ends and how high its middle rises. Overpasses over roads stay on the ground, since the road
+ * under them is on the ground too. Returns whether the road is such a bridge.
+ */
+export function markBridge(road, points) {
+  if (!road.overWater) return false;
+  if (!road.bridgeDeck) {
+    const length = cumulativeLengths(points).at(-1);
+    // Ramps only at ends that do not continue as another bridge over the water
+    const ramps = [points[0], points.at(-1)].filter((_, i) => !road.bridgeJoined?.[i]);
+    const lift = Math.min(BRIDGE_LIFT, ramps.length === 2 ? (BRIDGE_GRADE * length) / 2 : ramps.length === 1 ? BRIDGE_GRADE * length : Infinity);
+    road.bridgeDeck = { ramps: ramps.map((p) => ({ x: p.x, y: p.y })), lift };
+  }
+  return true;
+}
+
+/** Metres a marked bridge stands above the ground at (x, z): ramps up off both ends. 0 for other roads. */
+export function bridgeLiftAt(road, x, z) {
+  const d = road.bridgeDeck;
+  if (!d) return 0;
+  const fromEnd = Math.min(...d.ramps.map((p) => Math.hypot(x - p.x, z - p.y)));
+  return Math.min(d.lift, fromEnd * BRIDGE_GRADE);
+}
+
+/** Vertical band along a polyline at sideways `offset`, between y = top(p) and top(p) + dy */
+function sideWall(points, offset, top, dy) {
+  const pos = [], idx = [];
+  points.forEach((p, i) => {
+    const dir = (i === 0 ? points[1].clone().sub(p) : p.clone().sub(points[i - 1])).normalize();
+    const x = p.x - dir.y * offset, z = p.y + dir.x * offset;
+    const y = top(p);
+    pos.push(x, y, z, x, y + dy, z);
+    if (i > 0) { const k = (i - 1) * 2; idx.push(k, k + 2, k + 1, k + 1, k + 2, k + 3); }
+  });
+  // Both faces, each with its own vertices: shared vertices would average the normals to zero (black walls)
+  const side = (indices) => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setIndex(indices);
+    g.computeVertexNormals();
+    return g;
+  };
+  const back = [];
+  for (let i = 0; i < idx.length; i += 3) back.push(idx[i], idx[i + 2], idx[i + 1]);
+  return [side(idx), side(back)];
+}
+
+/** Deck sides, railings, pillars and colliders for the part of a bridge in this chunk */
+function bridgeStructure(piece, halfWidth, groundAt, liftAt, inChunk, geometries, body) {
+  const pts = densify(piece, ROAD_SAMPLE);
+  const deckY = (p) => groundAt(p.x, p.y) + ROAD_Y_OFFSET + liftAt(p.x, p.y);
+  for (const side of [halfWidth, -halfWidth]) {
+    for (const g of sideWall(pts, side, deckY, -DECK_DEPTH)) geometries.push(paint(g, CONCRETE));
+    for (const g of sideWall(pts, side * 1.02, deckY, RAIL_HEIGHT)) geometries.push(paint(g, RAIL));
+  }
+  let walked = 0, nextPillar = PILLAR_SPACING / 2;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    const len = a.distanceTo(b);
+    const mid = a.clone().add(b).multiplyScalar(0.5);
+    const ya = deckY(a), yb = deckY(b);
+    const lift = liftAt(mid.x, mid.y);
+    walked += len;
+    // Pillars where the deck is well off the ground, one per spacing; each chunk builds its own
+    if (walked >= nextPillar) {
+      nextPillar += PILLAR_SPACING;
+      if (lift > 1 && inChunk(mid)) {
+        const top = (ya + yb) / 2 - DECK_DEPTH, bottom = groundAt(mid.x, mid.y) - 2;
+        geometries.push(paint(new THREE.BoxGeometry(1.2, top - bottom, halfWidth * 1.4).rotateY(-Math.atan2(b.y - a.y, b.x - a.x)).translate(mid.x, (top + bottom) / 2, mid.y), CONCRETE));
+      }
+    }
+    if (lift < 0.15 || !inChunk(mid)) continue; // at the banks the ground carries the car
+    // Deck and railings to drive on: a thin box per piece, tilted with the ramp
+    const yaw = Math.atan2(b.x - a.x, b.y - a.y);
+    const q = new CANNON.Quaternion().setFromEuler(-Math.atan2(yb - ya, len), yaw, 0, 'YXZ');
+    const along = new CANNON.Vec3(0, 0, len / 2 + 0.05);
+    const centre = new CANNON.Vec3(mid.x, (ya + yb) / 2 - 0.2, mid.y);
+    body.addShape(new CANNON.Box(new CANNON.Vec3(halfWidth, 0.2, along.z)), centre, q);
+    for (const side of [halfWidth + 0.1, -halfWidth - 0.1]) {
+      const off = q.vmult(new CANNON.Vec3(side, RAIL_HEIGHT / 2 + 0.2, 0));
+      body.addShape(new CANNON.Box(new CANNON.Vec3(0.1, RAIL_HEIGHT / 2, along.z)), centre.vadd(off), q);
+    }
+  }
 }
 
 const MAJOR_ROADS = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary']);
@@ -207,8 +313,10 @@ function paint(geometry, [r, g, b]) {
  * @param {number} chunkWorldZ
  * @returns {THREE.BufferGeometry | null}
  */
-function createRoadStrip(points, halfWidth, elevationData, chunkWorldX, chunkWorldZ, baseElevation = null, yLift = 0, offset = 0) {
+function createRoadStrip(points, halfWidth, elevationData, chunkWorldX, chunkWorldZ, baseElevation = null, yLift = 0, offset = 0, liftAt = null) {
   if (points.length < 2) return null;
+  // The ground bends every ~28 m; a straight 100 m segment between two OSM nodes would cut into hills
+  points = densify(points, ROAD_SAMPLE);
 
   const vertices = [];
   const indices = [];
@@ -246,8 +354,9 @@ function createRoadStrip(points, halfWidth, elevationData, chunkWorldX, chunkWor
     );
 
     // Add vertices (y = terrain elevation + offset)
-    const yLeft = getElevationAt(left.x - chunkWorldX, left.y - chunkWorldZ, elevationData, baseElevation) + ROAD_Y_OFFSET + yLift;
-    const yRight = getElevationAt(right.x - chunkWorldX, right.y - chunkWorldZ, elevationData, baseElevation) + ROAD_Y_OFFSET + yLift;
+    const lift = yLift + (liftAt ? liftAt(points[i].x, points[i].y) : 0);
+    const yLeft = getElevationAt(left.x - chunkWorldX, left.y - chunkWorldZ, elevationData, baseElevation) + ROAD_Y_OFFSET + lift;
+    const yRight = getElevationAt(right.x - chunkWorldX, right.y - chunkWorldZ, elevationData, baseElevation) + ROAD_Y_OFFSET + lift;
     
     vertices.push(left.x, yLeft, left.y);
     vertices.push(right.x, yRight, right.y);
@@ -278,6 +387,19 @@ function createRoadStrip(points, halfWidth, elevationData, chunkWorldX, chunkWor
   geometry.computeVertexNormals();
 
   return geometry;
+}
+
+const ROAD_SAMPLE = 4; // metres between road cross-sections
+
+/** The polyline with extra points so no piece is longer than `step` metres */
+export function densify(points, step) {
+  const out = [points[0]];
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i];
+    const n = Math.ceil(a.distanceTo(b) / step);
+    for (let k = 1; k <= n; k++) out.push(a.clone().lerp(b, k / n));
+  }
+  return out;
 }
 
 /**

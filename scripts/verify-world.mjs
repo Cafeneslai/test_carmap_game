@@ -24,12 +24,14 @@ import { ElevationField } from '../src/data/ElevationField.js';
 import { headingToBearingDeg } from '../src/ui/compass.js';
 import { CHUNK_SIZE } from '../src/config.js';
 import { pickCheckpoint, paceSecondsPerKm } from '../src/core/Mission.js';
-import { dashPolyline, findJunctions, cutPolyline, sidewalkSides } from '../src/world/RoadGenerator.js';
+import { dashPolyline, findJunctions, cutPolyline, sidewalkSides, bridgeLiftAt } from '../src/world/RoadGenerator.js';
 import { lampPositions, generateStreetLamps } from '../src/world/StreetLamps.js';
-import { buildingHeight, pitchedRoof, wallBands, tagColor } from '../src/world/BuildingGenerator.js';
+import { buildingHeight, pitchedRoof, wallBands, tagColor, minHeight } from '../src/world/BuildingGenerator.js';
 import { facadeStyle } from '../src/world/Facades.js';
 import { signalState, signalHeads, CYCLE_SECONDS } from '../src/world/TrafficLights.js';
 import { TrafficManager, lanesPerDirection } from '../src/world/Traffic.js';
+import { towerSpec, towerGeometry, generateTowers, dropTowerParts } from '../src/world/Towers.js';
+import { markWaterBridges } from '../src/data/OSMFetcher.js';
 import { isLeftHandTraffic } from '../src/data/DrivingSide.js';
 import { lightingAt, sunDirection, solarHourNow } from '../src/world/DayNight.js';
 import { weatherFromApi, weatherIcon } from '../src/world/Weather.js';
@@ -220,6 +222,17 @@ section('Realistic city: markings, lamps, building heights');
   const all = perChunk.flat().sort((a, b) => a.x - b.x);
   check('street lamps are not duplicated across chunks and are ~35 m apart', all.length === 17 && all.slice(1).every((p, i) => near(p.x - all[i].x, 35, 0.5)), `${all.length} lamps`);
   check('lamps stand beside the road, not on it (primary is 10 m wide)', all.every((p) => near(Math.abs(p.z - 10), 6, 0.3)));
+  const grid = [];
+  for (let k = -100; k <= 100; k += 8) grid.push({ tags: { highway: 'residential' }, geometry: [at(-100, k), at(100, k)] });
+  const dense = lampPositions(grid, 0, 0, ORIGIN.lat, ORIGIN.lng);
+  const lastStreet = dense.filter((p) => p.road === grid.at(-1)).length;
+  check('a dense chunk still lights its last-listed street', lastStreet > 0 && dense.length <= 400, `${dense.length} lamps, ${lastStreet} on the last street`);
+  // Bug: Bangsaen's campus is 235 service roads, all dark at night
+  check('campus service roads are lit, driveways are not (unless lit=yes), lit=no darkens a primary road',
+    lampPositions([{ tags: { highway: 'service' }, geometry: road.geometry }], 0, 0, ORIGIN.lat, ORIGIN.lng).length > 0 &&
+    lampPositions([{ tags: { highway: 'service', service: 'driveway' }, geometry: road.geometry }], 0, 0, ORIGIN.lat, ORIGIN.lng).length === 0 &&
+    lampPositions([{ tags: { highway: 'service', service: 'driveway', lit: 'yes' }, geometry: road.geometry }], 0, 0, ORIGIN.lat, ORIGIN.lng).length > 0 &&
+    lampPositions([{ tags: { highway: 'primary', lit: 'no' }, geometry: road.geometry }], 0, 0, ORIGIN.lat, ORIGIN.lng).length === 0);
   check('footways get no street lamps', lampPositions([{ tags: { highway: 'footway' }, geometry: road.geometry }], 0, 0, ORIGIN.lat, ORIGIN.lng).length === 0);
 
   check('OSM height and levels win over the guess', buildingHeight({ tags: { height: '42' } }) === 42 && buildingHeight({ tags: { 'building:levels': '10' } }) === 30);
@@ -361,8 +374,8 @@ section('Traffic lights and NPC cars');
   const p2 = { x: 0, y: 0, z: 150 };
   t2.update(0.6, p2, 0); t2.update(0.6, p2, 0);
   const [fast, slow] = t2.cars;
-  Object.assign(slow, { s: 380, dirSign: 1, lane: 0, speed: 3, max: 3 });
-  Object.assign(fast, { s: 340, dirSign: 1, lane: 0, speed: 13, max: 13, laneTimer: 0 });
+  Object.assign(slow, { s: 380, dirSign: 1, lane: 0, speed: 3, max: 3, pos: null, yaw: null });
+  Object.assign(fast, { s: 340, dirSign: 1, lane: 0, speed: 13, max: 13, laneTimer: 0, pos: null, yaw: null });
   t2.spawnTimer = 1e9;
   let minGap = Infinity;
   for (let t = 0; t < 10; t += 1 / 30) { t2.update(1 / 30, p2, 0); minGap = Math.min(minGap, Math.hypot(fast.mesh.position.x - slow.mesh.position.x, fast.mesh.position.z - slow.mesh.position.z)); }
@@ -634,6 +647,77 @@ if (process.argv.includes('--online')) {
   const lakes = park.water.filter((w) => w.relation);
   check('Central Park: lakes from multipolygon relations, fetched whole, with islands', lakes.some((w) => w.geometry.length > 100 && w.holes.length > 0),
     lakes.map((w) => `${w.tags.name}: ${w.geometry.length} pts, ${w.holes.length} island(s)`).join('; ') || 'none');
+}
+
+// ------------------------------------------------------------------------------------------
+section('Roads on hills, bridges, towers');
+{
+  // Bug: roads sank into hills: heights were bilinear (not the mesh's triangles) and only taken at OSM nodes
+  const hill = Array.from({ length: 8 }, (_, r) => Array.from({ length: 8 }, (_, c) => 30 * Math.sin(r * 1.3) * Math.cos(c * 0.9)));
+  const terrain = generateTerrain(hill, 0, 0, 0, 0, 0).mesh;
+  terrain.updateMatrixWorld();
+  const ray = new THREE.Raycaster();
+  let worst = 0;
+  for (let i = 0; i < 200; i++) {
+    const x = (Math.random() - 0.5) * 190, z = (Math.random() - 0.5) * 190;
+    ray.set(new THREE.Vector3(x, 500, z), new THREE.Vector3(0, -1, 0));
+    const hit = ray.intersectObject(terrain)[0];
+    if (hit) worst = Math.max(worst, Math.abs(hit.point.y - getElevationAt(x, z, hill, 0)));
+  }
+  check('getElevationAt matches the drawn terrain mesh', worst < 0.01, `worst ${worst.toFixed(3)} m`);
+  const hillRoad = { tags: { highway: 'residential' }, geometry: [at(-90, -80), at(90, 85)] };
+  const rp = generateRoads([hillRoad], hill, 0, 0, ORIGIN.lat, ORIGIN.lng, 0).geometry.attributes.position;
+  let below = 0;
+  for (let i = 0; i < rp.count; i++) {
+    ray.set(new THREE.Vector3(rp.getX(i), 500, rp.getZ(i)), new THREE.Vector3(0, -1, 0));
+    const hit = ray.intersectObject(terrain)[0];
+    if (hit && rp.getY(i) < hit.point.y) below++;
+  }
+  check('a long straight road over a hill never dips under the ground', below === 0, `${below} of ${rp.count} vertices under`);
+
+  // Bridges: one over a river is raised with railings and colliders, an overpass stays on the ground
+  const river = { id: 'w1', tags: { waterway: 'river' }, geometry: [at(0, -150), at(0, 150)] };
+  const bridge = { id: 'b1', tags: { highway: 'primary', bridge: 'yes' }, geometry: [at(-40, 0), at(40, 0)] };
+  const overpass = { id: 'b2', tags: { highway: 'primary', bridge: 'yes' }, geometry: [at(60, 60), at(140, 60)] };
+  markWaterBridges({ roads: [bridge, overpass], water: [river] });
+  check('a bridge crossing a river is marked as over water, one over a road is not', bridge.overWater === true && overpass.overWater === false);
+  const spanA = { id: 'v1', tags: { highway: 'motorway', bridge: 'viaduct' }, geometry: [at(-30, -100), at(-30, 0)] };
+  const spanB = { id: 'v2', tags: { highway: 'motorway', bridge: 'viaduct' }, geometry: [at(-30, 0), at(-30, 100)] };
+  const river2 = { id: 'w2', tags: { waterway: 'river' }, geometry: [at(-26, -150), at(-26, 150)] };
+  markWaterBridges({ roads: [spanA, spanB], water: [river2] });
+  for (const r of [spanA, spanB]) generateRoads([r], flat(), 0, 0, ORIGIN.lat, ORIGIN.lng, 0);
+  const joint = bridgeLiftAt(spanA, -30, 0), outer = bridgeLiftAt(spanA, -30, -100);
+  check('two bridge spans in a row stay up where they meet (no dip in a viaduct)', spanA.overWater && near(joint, 2.5, 0.01) && near(bridgeLiftAt(spanB, -30, 0), 2.5, 0.01) && near(outer, 0, 0.01), `joint ${joint.toFixed(2)} m, outer end ${outer.toFixed(2)} m`);
+  const deck = generateRoads([bridge], flat(), 0, 0, ORIGIN.lat, ORIGIN.lng, 0);
+  const dbox = new THREE.Box3().setFromObject(deck);
+  check('the bridge deck rises over the river and has railings and colliders', dbox.max.y > 3 && deck.userData.body?.shapes.length > 10, `top ${dbox.max.y.toFixed(1)} m, ${deck.userData.body?.shapes.length} shapes`);
+  const bw = new CANNON.World();
+  bw.addBody(deck.userData.body);
+  const hits = new CANNON.RaycastResult();
+  bw.raycastClosest(new CANNON.Vec3(0, 20, 0), new CANNON.Vec3(0, -20, 0), {}, hits);
+  check('the car can drive on the middle of the bridge', hits.hasHit && near(hits.hitPointWorld.y, 2.55, 0.3), `deck at ${hits.hitPointWorld.y.toFixed(2)} m`);
+
+  // Towers: Tokyo Tower is a 'building' outline tagged height=21 (the building between its legs)
+  const tokyo = towerSpec({ width: 88, tags: { man_made: 'tower', 'tower:type': 'communication', 'tower:construction': 'lattice', height: '21' } });
+  check('a big lattice TV tower gets a landmark height, not its base building height', tokyo.shape === 'lattice' && tokyo.height > 300 && tokyo.banded, `${tokyo.shape} ${tokyo.height.toFixed(0)} m`);
+  check('chimney, water tower and mast keep their tagged height',
+    towerSpec({ tags: { man_made: 'chimney', height: '80' } }).height === 80 && towerSpec({ tags: { man_made: 'water_tower' } }).shape === 'water' && towerSpec({ tags: { man_made: 'mast', height: '100' } }).banded);
+  const tg = towerGeometry(tokyo);
+  tg.computeBoundingBox();
+  check('the lattice tower is as tall as its spec', near(tg.boundingBox.max.y, tokyo.height, 2), `${tg.boundingBox.max.y.toFixed(0)} m`);
+  const parsedTowers = parseOsmXml(`<osm><node id="9" lat="13.2836" lon="100.9268"><tag k="man_made" v="mast"/><tag k="height" v="70"/></node></osm>`).towers;
+  check('a mast node is parsed as a tower', parsedTowers.length === 1 && parsedTowers[0].tags.height === '70');
+  const tgroup = generateTowers(parsedTowers, flat(), 0, 0, ORIGIN.lat, ORIGIN.lng, 0);
+  // Bug: OSM's 3D sketch of Tokyo Tower (sections at min_height 217-332 m) was built from the ground with windows
+  const floating = { id: 7, tags: { building: 'yes', height: '246', min_height: '241' }, geometry: square(-5, -5, 5, 5) };
+  const fbox = new THREE.Box3().setFromObject(generateBuildings([floating], flat(), 0, 0, ORIGIN.lat, ORIGIN.lng, 0));
+  check('a building part with min_height floats instead of standing on the ground', fbox.min.y > 240 && near(fbox.max.y, 246, 0.5), `y ${fbox.min.y.toFixed(0)}..${fbox.max.y.toFixed(0)}`);
+  check('building=roof is only its roof height thick', minHeight({ tags: { building: 'roof', height: '40', 'roof:height': '33' } }) === 7);
+  const towerAt = { lat: at(0, 0).lat, lon: at(0, 0).lon, width: 80, tags: { man_made: 'tower' } };
+  const kept = dropTowerParts([floating, { id: 8, tags: { building: 'yes' }, bounds: { minLat: 0, maxLat: 0, minLon: 0, maxLon: 0 } },
+    { ...floating, id: 9, bounds: { minLat: at(0, 0).lat, maxLat: at(0, 0).lat, minLon: at(0, 0).lon, maxLon: at(0, 0).lon } }], [towerAt], ORIGIN.lat, ORIGIN.lng);
+  check('OSM sections inside a tower outline give way to the tower model', kept.length === 2 && !kept.some((b) => b.id === 9));
+  check('towers get a mesh and a collider', tgroup.children.length >= 1 && tgroup.userData.body.shapes.length === 1);
 }
 
 console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) FAILED.`);

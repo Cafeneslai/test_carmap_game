@@ -13,6 +13,7 @@ import * as CANNON from 'cannon-es';
 import { ROAD_WIDTHS } from '../config.js';
 import { latLngToMeters } from '../data/GeoUtils.js';
 import { signalKey, signalPhase, signalState } from './TrafficLights.js';
+import { bridgeLiftAt } from './RoadGenerator.js';
 
 const MAX_CARS = 12;
 const SPAWN_MIN = 60, SPAWN_MAX = 300; // metres from the player
@@ -333,7 +334,8 @@ export class TrafficManager {
       car.pos.x += (tx - car.pos.x) * k; car.pos.y += (tz - car.pos.y) * k;
       const x = car.pos.x, z = car.pos.y;
 
-      const ground = this.chunkManager.getTerrainHeight(x, z);
+      const terrain = this.chunkManager.getTerrainHeight(x, z);
+      const ground = terrain === null ? null : terrain + bridgeLiftAt(car.way.road, x, z);
       if (ground === null || Math.hypot(x - playerPos.x, z - playerPos.z) > DESPAWN) {
         this._remove(car); // left the loaded world, or too far to matter
         continue;

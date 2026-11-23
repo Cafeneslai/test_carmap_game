@@ -17,10 +17,11 @@ import { generateTrafficLights } from './TrafficLights.js';
 import { isLeftHandTraffic } from '../data/DrivingSide.js';
 import { paintGround, getGroundDetailTexture } from './GroundPainter.js';
 import { satelliteGround } from './SatelliteGround.js';
+import { generateTowers, dropTowerParts } from './Towers.js';
 
 // Bump when the shape or orientation of cached data changes. v3: elevation comes from the shared
 // world lattice (ElevationField), rows run north->south, buildings belong to a single chunk.
-const CACHE_VERSION = 'v9'; // v9: buildings with courtyards (multipolygon); v8: OSM street trees (natural=tree, tree_row); v7: Overture buildings where OSM has none; v6: multipolygon relations (big forests, lakes with islands); v5: landcover; v4: signals
+const CACHE_VERSION = 'v10'; // v10: towers (man_made); v9: buildings with courtyards (multipolygon); v8: OSM street trees (natural=tree, tree_row); v7: Overture buildings where OSM has none; v6: multipolygon relations (big forests, lakes with islands); v5: landcover; v4: signals
 
 function flatGrid() {
   return Array.from({ length: TERRAIN_RESOLUTION }, () => new Array(TERRAIN_RESOLUTION).fill(0));
@@ -124,6 +125,10 @@ export class WorldBuilder {
     if (osmData.roads.length > 0) {
       const roads = generateRoads(osmData.roads, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base);
       if (roads) chunk.meshGroup.add(roads);
+      if (roads?.userData.body) {
+        physicsWorld.addBody(roads.userData.body);
+        chunk.physicsBodies.push(roads.userData.body);
+      }
       const lamps = generateStreetLamps(osmData.roads, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base);
       const signals = generateTrafficLights(osmData.signals, osmData.roads, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base, this.leftHand);
       for (const extra of [lamps, signals]) {
@@ -136,7 +141,7 @@ export class WorldBuilder {
 
     // 3. Buildings
     if (osmData.buildings.length > 0) {
-      const buildings = generateBuildings(osmData.buildings, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base, osmData.landcover, osmData.roads);
+      const buildings = generateBuildings(dropTowerParts(osmData.buildings, osmData.towers, originLat, originLng), elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base, osmData.landcover, osmData.roads);
       if (buildings) {
         chunk.meshGroup.add(buildings);
         const body = buildings.userData.body;
@@ -145,6 +150,14 @@ export class WorldBuilder {
           chunk.physicsBodies.push(body);
         }
       }
+    }
+
+    // 3b. Towers, masts, chimneys
+    const towers = generateTowers(osmData.towers, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base);
+    if (towers) {
+      chunk.meshGroup.add(towers);
+      physicsWorld.addBody(towers.userData.body);
+      chunk.physicsBodies.push(towers.userData.body);
     }
 
     // 4. Water

@@ -89,6 +89,21 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
       floorY = Math.max(floorY, y);
       lowest = Math.min(lowest, y);
     }
+    // A part that starts above the ground (a skybridge, the upper sections of a tower) floats at min_height
+    const minH = Math.min(minHeight(building), height - 0.5);
+    if (minH > 0) {
+      const wallColor = tagColor(building.tags?.['building:colour']) ?? new THREE.Color(pick(WALL_COLORS.generic, idNumber(building.id)));
+      for (const ring of [shapePoints, ...holes]) {
+        const walls = wallBands(ring, floorY + minH, height - minH, 3, wallColor, ring !== shapePoints);
+        add('plain', walls.ground);
+        add('plain', walls.upper);
+      }
+      const roofColor = tagColor(building.tags?.['roof:colour']) ?? wallColor;
+      add('plain', flatRoof(shapePoints, floorY + height, roofColor, holes));
+      add('plain', flipFaces(flatRoof(shapePoints, floorY + minH, wallColor, holes)));
+      if (minH < 4) addCollisionBox(body, shapePoints, floorY + minH, height - minH, holes); // higher up the car cannot reach
+      continue;
+    }
     addCollisionBox(body, shapePoints, lowest - WALL_SINK, floorY + height - (lowest - WALL_SINK), holes);
 
     const area = Math.abs(polygonArea(shapePoints));
@@ -230,6 +245,33 @@ function flatRoof(points, topY, color, holes = []) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Metres above the ground where a building part starts: OSM min_height / building:min_level, and a
+ * `building=roof` (a canopy, a tower's leg) is only its roof:height thick (1 m when untagged).
+ */
+export function minHeight(building) {
+  const tags = building.tags || {};
+  let m = parseFloat(tags.min_height);
+  if (!(m > 0)) m = (parseInt(tags['building:min_level']) || 0) * METERS_PER_FLOOR;
+  if (tags.building === 'roof') m = Math.max(m, buildingHeight(building) - (parseFloat(tags['roof:height']) || 1));
+  return m;
+}
+
+/** The same triangles seen from the other side (the underside of a floating part) */
+function flipFaces(g) {
+  if (!g) return null;
+  const pos = g.attributes.position, nor = g.attributes.normal;
+  for (let i = 0; i < pos.count; i += 3) {
+    for (const attr of [pos, nor, g.attributes.color, g.attributes.uv].filter(Boolean)) {
+      const a = [], n = attr.itemSize;
+      for (let k = 0; k < n; k++) a.push(attr.array[(i + 1) * n + k]);
+      for (let k = 0; k < n; k++) { attr.array[(i + 1) * n + k] = attr.array[(i + 2) * n + k]; attr.array[(i + 2) * n + k] = a[k]; }
+    }
+  }
+  for (let i = 0; i < nor.count; i++) nor.setY(i, -nor.getY(i));
+  return g;
 }
 
 /**

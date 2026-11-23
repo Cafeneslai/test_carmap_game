@@ -45,10 +45,11 @@ export function getElevationAt(localX, localZ, elevationGrid, baseElevation = nu
   const e01 = getE(row1, col0);
   const e11 = getE(row1, col1);
 
-  // Bilinear interpolation
-  const e0 = e00 * (1 - tx) + e10 * tx;
-  const e1 = e01 * (1 - tx) + e11 * tx;
-  const e = e0 * (1 - ty) + e1 * ty;
+  // Same two triangles per cell as the terrain mesh (PlaneGeometry splits along row+1/col to row/col+1),
+  // so roads, buildings and trees sit exactly on the drawn ground; bilinear sat up to ~1 m off it
+  const e = tx + ty <= 1
+    ? e00 + (e10 - e00) * tx + (e01 - e00) * ty
+    : e11 + (e01 - e11) * (1 - tx) + (e10 - e11) * (1 - ty);
 
   return e * TERRAIN_Y_SCALE;
 }

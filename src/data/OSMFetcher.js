@@ -16,6 +16,9 @@ const CHUNK_TIMEOUT_MS = 10000;
 const OVERPASS_TIMEOUT_MS = 8000;
 const MAX_SPLIT_DEPTH = 3;
 /** Roads a car can actually be placed on / driven along */
+/** OSM man_made values built as towers (src/world/Towers.js) */
+export const TOWER_KINDS = new Set(['tower', 'mast', 'communications_tower', 'chimney', 'water_tower']);
+
 export const DRIVABLE = new Set([
   'motorway', 'motorway_link', 'trunk', 'trunk_link', 'primary', 'primary_link',
   'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'residential',
@@ -130,6 +133,15 @@ function classifyRelation(rel, out) {
 /** Sort one way (OSM API) or element (Overpass) into the category the generators expect. */
 function classify(element, out) {
   const tags = element.tags;
+  // Towers, masts, chimneys: a point with the size of their outline (0 for a node)
+  if (TOWER_KINDS.has(tags?.man_made)) {
+    const g = element.type === 'node' ? [element] : element.geometry;
+    if (g?.length) {
+      const b = computeBounds(g);
+      const size = latLngToMeters(b.maxLat, b.maxLon, b.minLat, b.minLon);
+      out.towers.push({ id: `t${element.id}`, lat: (b.minLat + b.maxLat) / 2, lon: (b.minLon + b.maxLon) / 2, width: Math.min(Math.abs(size.x), Math.abs(size.z)), tags: { man_made: tags.man_made, height: tags.height, 'tower:type': tags['tower:type'], 'tower:construction': tags['tower:construction'], location: tags.location } });
+    }
+  }
   if (element.type === 'node') {
     if (tags?.highway === 'traffic_signals') out.signals.push({ id: element.id, lat: element.lat, lon: element.lon });
     if (tags?.natural === 'tree') out.trees.push({ id: element.id, lat: element.lat, lon: element.lon, tags: { genus: tags.genus, species: tags.species, leaf_type: tags.leaf_type, height: tags.height } });
@@ -190,6 +202,13 @@ export function parseOsmXml(xml) {
   while ((match = taggedNodeRegex.exec(xml)) !== null) {
     const signal = /<tag k="highway" v="traffic_signals"\s*\/>/.test(match[3]);
     const tree = /<tag k="natural" v="tree"\s*\/>/.test(match[3]);
+    const manMade = /<tag k="man_made" v="([^"]*)"\s*\/>/.exec(match[3]);
+    if (manMade && TOWER_KINDS.has(manMade[1])) {
+      const tags = {};
+      for (const [, k, val] of match[3].matchAll(/<tag k="([^"]*)" v="([^"]*)"\s*\/>/g)) tags[k] = val;
+      const la = /lat="([^"]+)"/.exec(match[2]), lo = /lon="([^"]+)"/.exec(match[2]);
+      if (la && lo) classify({ type: 'node', id: match[1], lat: parseFloat(la[1]), lon: parseFloat(lo[1]), tags }, out);
+    }
     if (!signal && !tree) continue;
     const lat = /lat="([^"]+)"/.exec(match[2]);
     const lon = /lon="([^"]+)"/.exec(match[2]);
@@ -249,7 +268,7 @@ export function parseOsmXml(xml) {
 }
 
 function emptyParsed() {
-  return { roads: [], buildings: [], water: [], greenery: [], signals: [], landcover: [], trees: [], partial: [] };
+  return { roads: [], buildings: [], water: [], greenery: [], signals: [], landcover: [], trees: [], towers: [], partial: [] };
 }
 
 function merge(parts) {
@@ -267,12 +286,62 @@ function merge(parts) {
   return out;
 }
 
+/** Is p inside ring (x/z points)? */
+function inRing(p, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[i], b = ring[j];
+    if ((a.z > p.z) !== (b.z > p.z) && p.x < ((b.x - a.x) * (p.z - a.z)) / (b.z - a.z) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+function distToSegment(p, a, b) {
+  const dx = b.x - a.x, dz = b.z - a.z;
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.z - a.z) * dz) / (dx * dx + dz * dz || 1)));
+  return Math.hypot(p.x - a.x - dx * t, p.z - a.z - dz * t);
+}
+
+/**
+ * Sets road.overWater on bridges that cross a lake/river area or a river line. Done on the whole
+ * downloaded area so every chunk a bridge passes through agrees, even those without the water.
+ */
+export function markWaterBridges(parsed) {
+  for (const road of parsed.roads) {
+    if (!road.tags?.bridge || road.tags.bridge === 'no' || road.overWater !== undefined || !road.geometry?.length) continue;
+    const o = road.geometry[0];
+    const m = (n) => latLngToMeters(n.lat, n.lon, o.lat, o.lon);
+    const samples = [];
+    road.geometry.forEach((n, i) => {
+      if (i === 0) return samples.push(m(n));
+      const a = m(road.geometry[i - 1]), b = m(n);
+      const k = Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / 3);
+      for (let j = 1; j <= k; j++) samples.push({ x: a.x + ((b.x - a.x) * j) / k, z: a.z + ((b.z - a.z) * j) / k });
+    });
+    const b = computeBounds(road.geometry);
+    road.overWater = parsed.water.some((w) => {
+      if (!w.geometry || (w.bounds && !intersects(w.bounds, { south: b.minLat, north: b.maxLat, west: b.minLon, east: b.maxLon }, 0.0002))) return false;
+      const pts = w.geometry.map(m);
+      const line = !!w.tags?.waterway && w.tags.natural !== 'water' && w.tags.waterway !== 'riverbank';
+      if (!line) return pts.length >= 3 && samples.some((p) => inRing(p, pts));
+      const reach = w.tags.waterway === 'river' || w.tags.waterway === 'canal' ? 8 : 3;
+      return samples.some((p) => pts.some((a, i) => i > 0 && distToSegment(p, pts[i - 1], a) < reach));
+    });
+  }
+  // A long viaduct is several bridge ways in a row: only its outer ends ramp down to the ground
+  const key = (n) => `${n.lat.toFixed(7)},${n.lon.toFixed(7)}`;
+  const ends = new Map();
+  for (const r of parsed.roads) if (r.overWater) for (const n of [r.geometry[0], r.geometry.at(-1)]) ends.set(key(n), (ends.get(key(n)) || 0) + 1);
+  for (const r of parsed.roads) if (r.overWater) r.bridgeJoined = [r.geometry[0], r.geometry.at(-1)].map((n) => ends.get(key(n)) > 1);
+}
+
 function withBounds(parsed) {
   for (const key of ['roads', 'buildings', 'water', 'greenery', 'landcover']) {
     for (const el of parsed[key]) {
       if (!el.bounds || el.bounds.minLat === undefined) el.bounds = computeBounds(el.geometry);
     }
   }
+  markWaterBridges(parsed);
   return parsed;
 }
 
@@ -359,7 +428,7 @@ async function completeRelations(parsed) {
 
 async function fetchOverpassBox(bbox) {
   const b = bboxToOverpass(bbox);
-  const query = `[out:json][timeout:8];(way["highway"](${b});way["building"](${b});way["natural"="water"](${b});way["waterway"](${b});way["landuse"~"forest|grass"](${b});way["leisure"~"park|garden"](${b});node["highway"="traffic_signals"](${b});node["natural"="tree"](${b});way["natural"="tree_row"](${b});way["landuse"](${b});way["natural"~"wood|scrub|grassland|heath|beach|sand|bare_rock|scree|wetland|mud"](${b});way["leisure"~"pitch|golf_course|playground|sports_centre|stadium|track"](${b});way["amenity"~"parking|school|university|hospital|college"](${b});rel["type"="multipolygon"]["natural"~"water|wood|scrub|grassland|heath|beach|sand|wetland"](${b});rel["type"="multipolygon"]["landuse"](${b});rel["type"="multipolygon"]["leisure"~"park|garden|golf_course"](${b});rel["type"="multipolygon"]["building"](${b}););out geom;`;
+  const query = `[out:json][timeout:8];(way["highway"](${b});way["building"](${b});way["natural"="water"](${b});way["waterway"](${b});way["landuse"~"forest|grass"](${b});way["leisure"~"park|garden"](${b});node["highway"="traffic_signals"](${b});node["natural"="tree"](${b});way["natural"="tree_row"](${b});nwr["man_made"~"^(tower|mast|communications_tower|chimney|water_tower)$"](${b});way["landuse"](${b});way["natural"~"wood|scrub|grassland|heath|beach|sand|bare_rock|scree|wetland|mud"](${b});way["leisure"~"pitch|golf_course|playground|sports_centre|stadium|track"](${b});way["amenity"~"parking|school|university|hospital|college"](${b});rel["type"="multipolygon"]["natural"~"water|wood|scrub|grassland|heath|beach|sand|wetland"](${b});rel["type"="multipolygon"]["landuse"](${b});rel["type"="multipolygon"]["leisure"~"park|garden|golf_course"](${b});rel["type"="multipolygon"]["building"](${b}););out geom;`;
 
   for (let attempt = 0; attempt < OVERPASS_ENDPOINTS.length; attempt++) {
     const index = (overpassIndex + attempt) % OVERPASS_ENDPOINTS.length;
@@ -423,7 +492,8 @@ function selectForChunk(parsed, bbox) {
   const inChunk = (n) => n.lat >= bbox.south && n.lat < bbox.north && n.lon >= bbox.west && n.lon < bbox.east;
   const signals = (parsed.signals || []).filter(inChunk);
   const trees = (parsed.trees || []).filter(inChunk);
-  return { roads, buildings, water, greenery, signals, landcover, trees };
+  const towers = (parsed.towers || []).filter(inChunk);
+  return { roads, buildings, water, greenery, signals, landcover, trees, towers };
 }
 
 function containsBox(outer, inner) {
