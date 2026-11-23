@@ -143,28 +143,34 @@ export function paintGround(landcover, chunkWorldX, chunkWorldZ, originLat, orig
   mask.fillRect(0, 0, SIZE, SIZE);
 
   // Big areas first so small ones (a parking lot inside a campus) end up on top
+  const toMeters = (ring) => ring.map((n) => latLngToMeters(n.lat, n.lon, originLat, originLng));
   const areas = (landcover || [])
-    .map((el) => ({ el, kind: landcoverType(el.tags || {}), pts: el.geometry.map((n) => latLngToMeters(n.lat, n.lon, originLat, originLng)) }))
+    .map((el) => ({ el, kind: landcoverType(el.tags || {}), pts: toMeters(el.geometry), holes: (el.holes || []).map(toMeters) }))
     .filter((a) => GROUND_COLORS[a.kind])
     .map((a) => ({ ...a, area: polygonArea(a.pts) }))
     .sort((a, b) => b.area - a.area);
 
-  for (const { el, kind, pts } of areas) {
+  // Outline plus holes (clearings in a forest, islands in a lake area); even-odd leaves the holes empty
+  const tracePath = (c, pts, holes) => {
+    c.beginPath();
+    for (const ring of [pts, ...holes]) {
+      ring.forEach((p, i) => (i ? c.lineTo(...toPx(p.x, p.z)) : c.moveTo(...toPx(p.x, p.z))));
+      c.closePath();
+    }
+  };
+
+  for (const { el, kind, pts, holes } of areas) {
     ctx.save();
-    ctx.beginPath();
-    pts.forEach((p, i) => (i ? ctx.lineTo(...toPx(p.x, p.z)) : ctx.moveTo(...toPx(p.x, p.z))));
-    ctx.closePath();
+    tracePath(ctx, pts, holes);
     ctx.fillStyle = shade(GROUND_COLORS[kind], el.id);
-    ctx.fill();
+    ctx.fill('evenodd');
     mask.globalCompositeOperation = PAVED.has(kind) ? 'destination-out' : 'source-over';
-    mask.beginPath();
-    pts.forEach((p, i) => (i ? mask.lineTo(...toPx(p.x, p.z)) : mask.moveTo(...toPx(p.x, p.z))));
-    mask.closePath();
-    mask.fill();
+    tracePath(mask, pts, holes);
+    mask.fill('evenodd');
 
     // Crop rows on fields, mown stripes on pitches: thin lines at an angle fixed per area
     if (kind === 'landuse=farmland' || kind === 'leisure=pitch' || kind === 'landuse=orchard' || kind === 'landuse=vineyard') {
-      ctx.clip();
+      ctx.clip('evenodd');
       const angle = ((Math.abs(Number(String(el.id).replace(/\D/g, '').slice(-4)) || 0) % 180) * Math.PI) / 180;
       const gap = kind === 'leisure=pitch' ? 5 * scale : 2.5 * scale;
       // Anchored on the area's first corner, so neighbouring chunks draw the same rows

@@ -14,6 +14,7 @@ import { generateTerrain } from '../src/world/TerrainGenerator.js';
 import { generateRoads } from '../src/world/RoadGenerator.js';
 import { generateBuildings } from '../src/world/BuildingGenerator.js';
 import { generateWater } from '../src/world/WaterGenerator.js';
+import { placeVegetation } from '../src/world/VegetationPlacer.js';
 import { getElevationAt } from '../src/world/ElevationUtils.js';
 import { metersToLatLng } from '../src/data/GeoUtils.js';
 import { parseOsmXml, findSpawnPoint, landcoverType } from '../src/data/OSMFetcher.js';
@@ -333,6 +334,52 @@ section('OSM parsing and spawn point');
   const spawn = findSpawnPoint(parsed.roads, ORIGIN.lat, ORIGIN.lng);
   check('spawn ignores footways and picks the drivable road', spawn && spawn.name.startsWith('Main'), spawn ? `${spawn.name}` : 'none');
   check('spawn sits on the road (within 15 m of origin) and points along it (east/west)', spawn && Math.hypot(spawn.x, spawn.z) < 15 && near(Math.abs(spawn.heading), Math.PI / 2, 0.05), spawn ? `x=${spawn.x.toFixed(1)} z=${spawn.z.toFixed(1)} heading=${spawn.heading.toFixed(2)}` : '');
+
+  // Bug: big forests and lakes are multipolygon relations of untagged ways, so they were missing.
+  // Outline: two untagged ways (one reversed) around a 400 m square; a clearing as an inner ring.
+  const ring = [[-200, -200], [200, -200], [200, 200], [-200, 200]].map(([x, z]) => at(x, z));
+  const hole = [[-20, -20], [20, -20], [20, 20], [-20, 20]].map(([x, z]) => at(x, z));
+  let nid = 100;
+  const nodeXml = [...ring, ...hole].map((p) => `<node id="${nid++}" lat="${p.lat}" lon="${p.lon}"/>`).join('');
+  const nd = (ids) => ids.map((i) => `<nd ref="${i}"/>`).join('');
+  const relXml = (extra = '') => `<osm>${nodeXml}
+    <way id="30">${nd([100, 101, 102])}</way><way id="31">${nd([100, 103, 102])}</way>
+    <way id="32">${nd([104, 105, 106, 107, 104])}</way>
+    <relation id="40"><member type="way" ref="30" role="outer"/><member type="way" ref="31" role="outer"/>
+      <member type="way" ref="32" role="inner"/>${extra}<tag k="type" v="multipolygon"/><tag k="landuse" v="forest"/></relation></osm>`;
+  const rel = parseOsmXml(relXml());
+  const forest = rel.greenery[0];
+  check('a multipolygon relation becomes one area with its hole (ways joined end to end)',
+    rel.greenery.length === 1 && rel.landcover.length === 1 && forest.geometry.length === 5 && forest.holes.length === 1 && rel.partial.length === 0,
+    `${rel.greenery.length} area(s), ${forest?.geometry.length} points, ${forest?.holes.length} hole(s)`);
+  check('a relation with ways outside the download is flagged for a full fetch',
+    parseOsmXml(relXml('<member type="way" ref="999" role="outer"/>')).partial[0]?.id === '40');
+
+  const trees = [0, 1].map((cx) => placeVegetation([forest], flat(), cx * CHUNK_SIZE, 0, ORIGIN.lat, ORIGIN.lng, 0));
+  const pts = [];
+  for (const g of trees) {
+    const inst = g?.children[0];
+    for (let i = 0; i < (inst?.count || 0); i++) pts.push(new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().fromArray(inst.instanceMatrix.array, i * 16)));
+  }
+  check('trees fill a big forest in every chunk, but none in its clearing',
+    trees.every((g) => g?.children[0].count >= 100) && !pts.some((p) => Math.abs(p.x) < 19 && Math.abs(p.z) < 19),
+    trees.map((g) => g?.children[0].count).join(' + ') + ' trees');
+
+  const bigLake = { tags: { natural: 'water' }, geometry: [...ring, ring[0]], holes: [hole] };
+  const pieces = [0, 1].map((cx) => generateWater([bigLake], cx * CHUNK_SIZE, 0, ORIGIN.lat, ORIGIN.lng));
+  const lbox = pieces[1] && new THREE.Box3().setFromObject(pieces[1]);
+  check('a lake bigger than a chunk is drawn by every chunk, cut to that chunk',
+    pieces.every(Boolean) && near(lbox.min.x, 100, 0.5) && near(lbox.max.x, 200, 0.5), lbox ? `x ${lbox.min.x.toFixed(1)}..${lbox.max.x.toFixed(1)}` : 'missing');
+  const wp = pieces[0].geometry.attributes.position;
+  let onIsland = 0;
+  for (let i = 0; i < wp.count; i += 3) {
+    const mx = (wp.getX(i) + wp.getX(i + 1) + wp.getX(i + 2)) / 3, mz = (wp.getZ(i) + wp.getZ(i + 1) + wp.getZ(i + 2)) / 3;
+    if (Math.abs(mx) < 19 && Math.abs(mz) < 19) onIsland++;
+  }
+  check('an island (inner ring) stays dry', onIsland === 0, `${onIsland} water triangles on the island`);
+  const riverbank = { tags: { waterway: 'riverbank' }, geometry: square(40, -60, 60, -40) };
+  const rb = new THREE.Box3().setFromObject(generateWater([riverbank], 0, 0, ORIGIN.lat, ORIGIN.lng));
+  check('a riverbank outline is filled as an area, not drawn as a river line', near(rb.min.x, 40, 0.5) && near(rb.max.x, 60, 0.5));
 }
 
 // ------------------------------------------------------------------------------------------
@@ -452,6 +499,14 @@ if (process.argv.includes('--online')) {
     }
     cm.dispose();
   }
+
+  // Central Park's lakes are multipolygon relations reaching outside a 600 m download
+  const { fetchChunkData } = await import('../src/data/OSMFetcher.js');
+  await preloadRegion(40.7812, -73.9665, 600);
+  const park = await fetchChunkData({ south: 40.7772, north: 40.7852, west: -73.9705, east: -73.9625 });
+  const lakes = park.water.filter((w) => w.relation);
+  check('Central Park: lakes from multipolygon relations, fetched whole, with islands', lakes.some((w) => w.geometry.length > 100 && w.holes.length > 0),
+    lakes.map((w) => `${w.tags.name}: ${w.geometry.length} pts, ${w.holes.length} island(s)`).join('; ') || 'none');
 }
 
 console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) FAILED.`);

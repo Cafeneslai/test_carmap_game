@@ -59,13 +59,71 @@ const LANDCOVER_KEYS = {
 
 /**
  * The ground-cover kind of an area, e.g. "landuse=farmland", or null when it has none we paint.
- * shortcut: multipolygon relations (big forests, lakes with islands) are not parsed yet; only closed ways.
  */
 export function landcoverType(tags) {
   for (const [key, values] of Object.entries(LANDCOVER_KEYS)) {
     if (values.has(tags[key])) return `${key}=${tags[key]}`;
   }
   return null;
+}
+
+const samePoint = (a, b) => a.lat === b.lat && a.lon === b.lon;
+
+/**
+ * Join way pieces end to end into closed rings (a big forest's outline is often 20+ ways).
+ * Pieces that never close up are dropped.
+ * @param {({lat: number, lon: number}[] | null)[]} pieces
+ */
+export function joinRings(pieces) {
+  const left = pieces.filter((p) => p && p.length >= 2);
+  const rings = [];
+  while (left.length) {
+    let ring = left.pop();
+    let grown = true;
+    while (grown && !samePoint(ring[0], ring.at(-1))) {
+      grown = false;
+      for (let i = 0; i < left.length; i++) {
+        const p = left[i];
+        if (samePoint(p[0], ring.at(-1))) ring = ring.concat(p.slice(1));
+        else if (samePoint(p.at(-1), ring.at(-1))) ring = ring.concat(p.slice(0, -1).reverse());
+        else continue;
+        left.splice(i, 1);
+        grown = true;
+        break;
+      }
+    }
+    if (ring.length >= 4 && samePoint(ring[0], ring.at(-1))) rings.push(ring);
+  }
+  return rings;
+}
+
+function insideRing(pt, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[i], b = ring[j];
+    if ((a.lat > pt.lat) !== (b.lat > pt.lat) && pt.lon < ((b.lon - a.lon) * (pt.lat - a.lat)) / (b.lat - a.lat) + a.lon) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * A multipolygon relation (big forest, lake with islands, park in several pieces) becomes one area
+ * per outer ring, tagged like the relation, with the inner rings inside it as `holes`.
+ * @param {{ id: string, tags: object, members: { role: string, geometry: object[] | null }[] }} rel
+ * @returns {boolean} false when member ways are missing from the download (the outline may not close)
+ */
+function classifyRelation(rel, out) {
+  const tags = rel.tags || {};
+  // Roads and buildings have no hole support, so their relations are left out
+  if (tags.type !== 'multipolygon' || tags.highway || tags.building) return true;
+  if (!landcoverType(tags) && tags.natural !== 'water' && !tags.waterway) return true;
+  const outers = joinRings(rel.members.filter((m) => m.role !== 'inner').map((m) => m.geometry));
+  const inners = joinRings(rel.members.filter((m) => m.role === 'inner').map((m) => m.geometry));
+  outers.forEach((ring, i) => {
+    const holes = inners.filter((h) => insideRing(h[0], ring));
+    classify({ id: `r${rel.id}_${i}`, relation: String(rel.id), tags, geometry: ring, holes }, out);
+  });
+  return rel.members.every((m) => m.geometry);
 }
 
 /** Sort one way (OSM API) or element (Overpass) into the category the generators expect. */
@@ -89,7 +147,7 @@ function classify(element, out) {
   } else if ((tags.natural === 'water' || tags.waterway) && geom.length >= 2) {
     out.water.push(element);
   } else if (
-    (tags.landuse === 'forest' || tags.landuse === 'grass' ||
+    (tags.landuse === 'forest' || tags.landuse === 'grass' || tags.natural === 'wood' ||
       tags.leisure === 'park' || tags.leisure === 'garden') && geom.length >= 3
   ) {
     out.greenery.push(element);
@@ -108,7 +166,7 @@ export function parseOsmXml(xml) {
     nodes.set(match[1], { lat: parseFloat(match[2]), lon: parseFloat(match[3]) });
   }
 
-  const out = { roads: [], buildings: [], water: [], greenery: [], signals: [], landcover: [] };
+  const out = emptyParsed();
 
   // Traffic lights are tagged nodes: <node id lat lon ...> <tag k="highway" v="traffic_signals"/> </node>
   // ([^>]*[^/]> skips self-closing <node .../> so a match never runs on into the next node)
@@ -120,6 +178,7 @@ export function parseOsmXml(xml) {
     if (lat && lon) out.signals.push({ id: match[1], lat: parseFloat(lat[1]), lon: parseFloat(lon[1]) });
   }
 
+  const wayGeometry = new Map(); // every way, tagged or not: relation outlines are mostly untagged ways
   const wayRegex = /<way id="(\d+)"[^>]*>([\s\S]*?)<\/way>/g;
   while ((match = wayRegex.exec(xml)) !== null) {
     const body = match[2];
@@ -139,15 +198,37 @@ export function parseOsmXml(xml) {
       tags[tag[1]] = tag[2];
     }
 
+    wayGeometry.set(match[1], geometry);
     classify({ id: match[1], geometry, tags }, out);
+  }
+
+  const relationRegex = /<relation id="(\d+)"[^>]*>([\s\S]*?)<\/relation>/g;
+  while ((match = relationRegex.exec(xml)) !== null) {
+    const body = match[2];
+    const members = [];
+    const memberRegex = /<member type="way" ref="(\d+)" role="([^"]*)"\s*\/>/g;
+    let m;
+    while ((m = memberRegex.exec(body)) !== null) {
+      // The map API only sends the member ways that touch the box; the others are missing
+      members.push({ role: m[2], geometry: wayGeometry.get(m[1]) ?? null });
+    }
+    const tags = {};
+    const tagRegex = /<tag k="([^"]*)" v="([^"]*)"\s*\/>/g;
+    let tag;
+    while ((tag = tagRegex.exec(body)) !== null) tags[tag[1]] = tag[2];
+    if (!classifyRelation({ id: match[1], tags, members }, out)) out.partial.push({ id: match[1], members: members.length });
   }
 
   return out;
 }
 
+function emptyParsed() {
+  return { roads: [], buildings: [], water: [], greenery: [], signals: [], landcover: [], partial: [] };
+}
+
 function merge(parts) {
-  const seen = { roads: new Set(), buildings: new Set(), water: new Set(), greenery: new Set(), signals: new Set(), landcover: new Set() };
-  const out = { roads: [], buildings: [], water: [], greenery: [], signals: [], landcover: [] };
+  const out = emptyParsed();
+  const seen = Object.fromEntries(Object.keys(out).map((k) => [k, new Set()]));
   for (const part of parts) {
     for (const key of Object.keys(out)) {
       for (const el of part[key] || []) {
@@ -200,7 +281,8 @@ async function fetchOsmBox(bbox, timeoutMs, depth = 0) {
   }
 
   if (response.ok) {
-    return parseOsmXml(await response.text());
+    const parsed = parseOsmXml(await response.text());
+    return depth === 0 ? completeRelations(parsed) : parsed;
   }
 
   if (response.status === 400 && depth < MAX_SPLIT_DEPTH) {
@@ -214,16 +296,44 @@ async function fetchOsmBox(bbox, timeoutMs, depth = 0) {
     ];
     const results = await Promise.all(quarters.map((q) => fetchOsmBox(q, timeoutMs, depth + 1)));
     if (results.some((r) => r === null)) return null;
-    return merge(results);
+    const merged = merge(results);
+    return depth === 0 ? completeRelations(merged) : merged;
   }
 
   console.warn(`OSM API answered ${response.status}`);
   return null;
 }
 
+const RELATION_API = OSM_MAP_API.replace(/map$/, 'relation');
+const MAX_RELATION_FETCHES = 12;
+const MAX_RELATION_MEMBERS = 400; // bigger ones (national forests) would be megabytes per cached chunk
+
+/**
+ * Relations reaching outside the box arrive with only their nearby ways, so the outline never closes.
+ * Fetch each of them whole (/relation/{id}/full) and swap it in.
+ */
+// shortcut: relations over MAX_RELATION_MEMBERS stay incomplete; clip them server-side if big ones matter.
+async function completeRelations(parsed) {
+  const todo = parsed.partial.filter((r) => r.members <= MAX_RELATION_MEMBERS).slice(0, MAX_RELATION_FETCHES);
+  if (todo.length === 0) return parsed;
+  const fulls = await Promise.all(todo.map(async (r) => {
+    try {
+      const response = await fetchWithTimeout(`${RELATION_API}/${r.id}/full`, {}, CHUNK_TIMEOUT_MS);
+      return response.ok ? parseOsmXml(await response.text()) : null;
+    } catch {
+      return null; // keep whatever rings did close
+    }
+  }));
+  const done = new Set(todo.filter((_, i) => fulls[i]).map((r) => r.id));
+  for (const key of ['water', 'greenery', 'landcover']) parsed[key] = parsed[key].filter((el) => !done.has(el.relation));
+  parsed.partial = parsed.partial.filter((r) => !done.has(r.id));
+  // Member ways that are tagged for themselves come along too; merge drops the ones already there
+  return merge([parsed, ...fulls.filter(Boolean).map((f) => ({ ...f, partial: [] }))]);
+}
+
 async function fetchOverpassBox(bbox) {
   const b = bboxToOverpass(bbox);
-  const query = `[out:json][timeout:8];(way["highway"](${b});way["building"](${b});way["natural"="water"](${b});way["waterway"](${b});way["landuse"~"forest|grass"](${b});way["leisure"~"park|garden"](${b});node["highway"="traffic_signals"](${b});way["landuse"](${b});way["natural"~"wood|scrub|grassland|heath|beach|sand|bare_rock|scree|wetland|mud"](${b});way["leisure"~"pitch|golf_course|playground|sports_centre|stadium|track"](${b});way["amenity"~"parking|school|university|hospital|college"](${b}););out geom;`;
+  const query = `[out:json][timeout:8];(way["highway"](${b});way["building"](${b});way["natural"="water"](${b});way["waterway"](${b});way["landuse"~"forest|grass"](${b});way["leisure"~"park|garden"](${b});node["highway"="traffic_signals"](${b});way["landuse"](${b});way["natural"~"wood|scrub|grassland|heath|beach|sand|bare_rock|scree|wetland|mud"](${b});way["leisure"~"pitch|golf_course|playground|sports_centre|stadium|track"](${b});way["amenity"~"parking|school|university|hospital|college"](${b});rel["type"="multipolygon"]["natural"~"water|wood|scrub|grassland|heath|beach|sand|wetland"](${b});rel["type"="multipolygon"]["landuse"](${b});rel["type"="multipolygon"]["leisure"~"park|garden|golf_course"](${b}););out geom;`;
 
   for (let attempt = 0; attempt < OVERPASS_ENDPOINTS.length; attempt++) {
     const index = (overpassIndex + attempt) % OVERPASS_ENDPOINTS.length;
@@ -241,8 +351,12 @@ async function fetchOverpassBox(bbox) {
 
       const json = await response.json();
       overpassIndex = index;
-      const out = { roads: [], buildings: [], water: [], greenery: [], signals: [], landcover: [] };
-      for (const el of json.elements || []) classify(el, out);
+      const out = emptyParsed();
+      for (const el of json.elements || []) {
+        if (el.type !== 'relation') classify(el, out);
+        // `out geom` gives every member way its whole geometry, so these outlines close
+        else classifyRelation({ id: el.id, tags: el.tags, members: (el.members || []).filter((m) => m.type === 'way').map((m) => ({ role: m.role, geometry: m.geometry?.length >= 2 ? m.geometry : null })) }, out);
+      }
       return out;
     } catch {
       // try the next endpoint
@@ -440,5 +554,5 @@ function generateProceduralFallback(bbox) {
     });
   });
 
-  return withBounds({ roads, buildings, water: [], greenery: [], signals: [], landcover: [] });
+  return withBounds({ ...emptyParsed(), roads, buildings });
 }

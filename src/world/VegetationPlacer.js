@@ -76,30 +76,30 @@ export function placeVegetation(greeneryElements, elevationData, chunkWorldX, ch
       if (p.z > maxZ) maxZ = p.z;
     }
 
-    // Scatter trees within polygon. The candidate sequence depends only on the polygon, never on
-    // the chunk, so every chunk a park touches computes the same trees and keeps only its own.
-    const area = (maxX - minX) * (maxZ - minZ);
-    const numTrees = Math.min(Math.floor(area * TREE_DENSITY), MAX_CANDIDATES_PER_POLYGON);
+    // Scatter trees only where the polygon overlaps this chunk: chunks never overlap, so no tree is
+    // placed twice, and a 5 km forest gets the same density as a small park
+    const half = CHUNK_SIZE / 2;
+    const x0 = Math.max(minX, chunkWorldX - half), x1 = Math.min(maxX, chunkWorldX + half);
+    const z0 = Math.max(minZ, chunkWorldZ - half), z1 = Math.min(maxZ, chunkWorldZ + half);
+    if (x0 >= x1 || z0 >= z1) continue;
+    const holes = (element.holes || []).map((ring) => ring.map((n) => latLngToMeters(n.lat, n.lon, originLat, originLng)));
+    const numTrees = Math.min(Math.floor((x1 - x0) * (z1 - z0) * TREE_DENSITY), MAX_CANDIDATES_PER_POLYGON);
 
-    // Seeded random based on polygon position (deterministic)
-    let seed = Math.abs(Math.floor(minX * 100 + minZ * 77));
+    // Seeded by polygon and chunk, so the world looks the same on every visit
+    let seed = Math.abs(Math.floor(minX * 100 + minZ * 77 + chunkWorldX * 13 + chunkWorldZ * 7)) % 2147483647 || 1;
 
     for (let i = 0; i < numTrees && treePositions.length < MAX_TREES_PER_CHUNK; i++) {
       seed = (seed * 16807 + 7) % 2147483647;
-      const rx = minX + (seed / 2147483647) * (maxX - minX);
+      const rx = x0 + (seed / 2147483647) * (x1 - x0);
       seed = (seed * 16807 + 7) % 2147483647;
-      const rz = minZ + (seed / 2147483647) * (maxZ - minZ);
+      const rz = z0 + (seed / 2147483647) * (z1 - z0);
+      seed = (seed * 16807 + 7) % 2147483647;
+      const scale = 0.6 + (seed / 2147483647) * 0.8; // 0.6 to 1.4
+      seed = (seed * 16807 + 7) % 2147483647;
+      const rotation = (seed / 2147483647) * Math.PI * 2;
 
-      // Simple point-in-polygon test
-      if (pointInPolygon(rx, rz, polygon)) {
-        seed = (seed * 16807 + 7) % 2147483647;
-        const scale = 0.6 + (seed / 2147483647) * 0.8; // 0.6 to 1.4
-        seed = (seed * 16807 + 7) % 2147483647;
-        const rotation = (seed / 2147483647) * Math.PI * 2;
-
-        const inChunk = rx >= chunkWorldX - CHUNK_SIZE / 2 && rx < chunkWorldX + CHUNK_SIZE / 2 &&
-          rz >= chunkWorldZ - CHUNK_SIZE / 2 && rz < chunkWorldZ + CHUNK_SIZE / 2;
-        if (inChunk) treePositions.push({ x: rx, z: rz, scale, rotation });
+      if (pointInPolygon(rx, rz, polygon) && !holes.some((h) => pointInPolygon(rx, rz, h))) {
+        treePositions.push({ x: rx, z: rz, scale, rotation });
       }
     }
   }

@@ -26,7 +26,8 @@ export function generateWater(waterElements, chunkWorldX, chunkWorldZ, originLat
   const geometries = [];
 
   for (const element of waterElements) {
-    const isWaterway = !!element.tags?.waterway;
+    // A riverbank is the river's area outline, not a centre line
+    const isWaterway = !!element.tags?.waterway && element.tags.natural !== 'water' && element.tags.waterway !== 'riverbank';
     if (!element.geometry || element.geometry.length < (isWaterway ? 2 : 3)) continue;
 
     // Convert coordinates
@@ -52,35 +53,48 @@ export function generateWater(waterElements, chunkWorldX, chunkWorldZ, originLat
       continue;
     }
 
-    // Lakes are flat, so exactly one chunk draws each lake: the one holding its centre.
-    // Before, every chunk the lake touched drew it at its own (clamped) height, so copies z-fought.
-    let cx = 0, cz = 0;
-    for (const p of points) { cx += p.x; cz += p.y; }
+    // Small lakes are drawn whole by the one chunk holding their centre (copies at different
+    // clamped heights z-fought). Lakes bigger than a chunk are cut to each chunk instead, otherwise
+    // a reservoir only appeared once the chunk at its middle was loaded.
+    let cx = 0, cz = 0, minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const p of points) {
+      cx += p.x; cz += p.y;
+      minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minZ = Math.min(minZ, p.y); maxZ = Math.max(maxZ, p.y);
+    }
     cx /= points.length;
     cz /= points.length;
-    if (cx < chunkWorldX - half || cx >= chunkWorldX + half || cz < chunkWorldZ - half || cz >= chunkWorldZ + half) continue;
-    const waterY = heightAt(cx, cz);
+    const big = maxX - minX > CHUNK_SIZE || maxZ - minZ > CHUNK_SIZE;
+    if (!big && (cx < chunkWorldX - half || cx >= chunkWorldX + half || cz < chunkWorldZ - half || cz >= chunkWorldZ + half)) continue;
 
-    // For water bodies (lakes, ponds), create a filled polygon
-    if (points.length >= 3) {
-      try {
-        // rotateX(-PI/2) below maps shape-Y to world -Z, so feed -Z to land on the right side
-        const shape = new THREE.Shape();
-        shape.moveTo(points[0].x, -points[0].y);
-        for (let i = 1; i < points.length; i++) {
-          shape.lineTo(points[i].x, -points[i].y);
-        }
-
-        const geometry = new THREE.ShapeGeometry(shape);
-        geometry.rotateX(-Math.PI / 2);
-        const positions = geometry.attributes.position;
-        for (let i = 0; i < positions.count; i++) {
-          positions.setY(i, waterY);
-        }
-        geometries.push(geometry);
-      } catch {
-        continue;
+    try {
+      // rotateX(-PI/2) below maps shape-Y to world -Z, so feed -Z to land on the right side
+      const shape = new THREE.Shape(points.map((p) => new THREE.Vector2(p.x, -p.y)));
+      for (const hole of element.holes || []) {
+        shape.holes.push(new THREE.Path(hole.map((n) => {
+          const { x, z } = latLngToMeters(n.lat, n.lon, originLat, originLng);
+          return new THREE.Vector2(x, -z);
+        })));
       }
+      let geometry = new THREE.ShapeGeometry(shape);
+      geometry.rotateX(-Math.PI / 2);
+      if (big) {
+        geometry = clipToRect(geometry, chunkWorldX - half, chunkWorldX + half, chunkWorldZ - half, chunkWorldZ + half);
+        if (!geometry) continue;
+      }
+      const positions = geometry.attributes.position;
+      // Big lakes: level taken inside this chunk (DEM water is flat, so neighbours agree closely)
+      let sx = cx, sz = cz;
+      if (big) {
+        sx = sz = 0;
+        for (let i = 0; i < positions.count; i++) { sx += positions.getX(i); sz += positions.getZ(i); }
+        sx /= positions.count;
+        sz /= positions.count;
+      }
+      const waterY = heightAt(sx, sz);
+      for (let i = 0; i < positions.count; i++) positions.setY(i, waterY);
+      geometries.push(geometry);
+    } catch {
+      continue;
     }
   }
 
@@ -106,6 +120,48 @@ export function generateWater(waterElements, chunkWorldX, chunkWorldZ, originLat
   mesh.receiveShadow = true;
 
   return mesh;
+}
+
+/**
+ * Keep only the part of a flat (XZ) triangle mesh inside a rectangle: each triangle is clipped
+ * (Sutherland-Hodgman) and the convex piece left is fanned back into triangles.
+ * @returns {THREE.BufferGeometry | null} null when nothing is inside
+ */
+export function clipToRect(geometry, minX, maxX, minZ, maxZ) {
+  const pos = geometry.attributes.position;
+  const index = geometry.index;
+  const count = index ? index.count : pos.count;
+  const edges = [(p) => p.x - minX, (p) => maxX - p.x, (p) => p.z - minZ, (p) => maxZ - p.z];
+  const out = [];
+  for (let t = 0; t < count; t += 3) {
+    let poly = [0, 1, 2].map((k) => {
+      const i = index ? index.getX(t + k) : t + k;
+      return { x: pos.getX(i), z: pos.getZ(i) };
+    });
+    for (const inside of edges) {
+      const next = [];
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i], b = poly[(i + 1) % poly.length];
+        const da = inside(a), db = inside(b);
+        if (da >= 0) next.push(a);
+        if ((da >= 0) !== (db >= 0)) {
+          const k = da / (da - db);
+          next.push({ x: a.x + (b.x - a.x) * k, z: a.z + (b.z - a.z) * k });
+        }
+      }
+      poly = next;
+      if (poly.length < 3) break;
+    }
+    for (let i = 1; i + 1 < poly.length; i++) {
+      for (const p of [poly[0], poly[i], poly[i + 1]]) out.push(p.x, 0, p.z);
+    }
+  }
+  if (out.length === 0) return null;
+  const clipped = new THREE.BufferGeometry();
+  clipped.setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
+  clipped.setAttribute('normal', new THREE.Float32BufferAttribute(out.map((_, i) => (i % 3 === 1 ? 1 : 0)), 3));
+  clipped.setIndex([...Array(out.length / 3).keys()]); // mergeSimple expects indexed geometry
+  return clipped;
 }
 
 function getWaterwayWidth(type) {
