@@ -4,6 +4,7 @@
  */
 
 import * as THREE from 'three';
+import * as CANNON from 'cannon-es';
 import { ROAD_WIDTHS, CHUNK_SIZE } from '../config.js';
 import { latLngToMeters } from '../data/GeoUtils.js';
 import { getElevationAt } from './ElevationUtils.js';
@@ -76,14 +77,20 @@ export function generateStreetLamps(roads, elevationData, chunkWorldX, chunkWorl
   poles.castShadow = true;
   for (const m of [poles, bulbs, glows]) m.userData.shared = true; // geometry/material shared by all chunks
 
+  // One static body per chunk with a thin box per pole, so the car hits poles instead of passing through
+  const body = new CANNON.Body({ mass: 0 });
+  const poleShape = new CANNON.Box(new CANNON.Vec3(0.15, POLE_HEIGHT / 2, 0.15));
+
   const matrix = new THREE.Matrix4();
   positions.forEach(({ x, z }, i) => {
     const y = getElevationAt(x - chunkWorldX, z - chunkWorldZ, elevationData, baseElevation);
+    body.addShape(poleShape, new CANNON.Vec3(x, y + POLE_HEIGHT / 2, z));
     matrix.makeTranslation(x, y, z);
     poles.setMatrixAt(i, matrix);
     bulbs.setMatrixAt(i, matrix);
     glows.setMatrixAt(i, matrix);
   });
   group.add(poles, bulbs, glows);
+  group.userData.body = body;
   return group;
 }

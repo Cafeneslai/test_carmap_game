@@ -116,7 +116,11 @@ export class WorldBuilder {
       const roads = generateRoads(osmData.roads, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base);
       if (roads) chunk.meshGroup.add(roads);
       const lamps = generateStreetLamps(osmData.roads, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base);
-      if (lamps) chunk.meshGroup.add(lamps);
+      if (lamps) {
+        chunk.meshGroup.add(lamps);
+        physicsWorld.addBody(lamps.userData.body);
+        chunk.physicsBodies.push(lamps.userData.body);
+      }
     }
 
     // 3. Buildings

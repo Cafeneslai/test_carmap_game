@@ -21,9 +21,9 @@ import { ElevationField } from '../src/data/ElevationField.js';
 import { headingToBearingDeg } from '../src/ui/compass.js';
 import { CHUNK_SIZE } from '../src/config.js';
 import { pickCheckpoint, paceSecondsPerKm } from '../src/core/Mission.js';
-import { dashPolyline } from '../src/world/RoadGenerator.js';
-import { lampPositions } from '../src/world/StreetLamps.js';
-import { buildingHeight } from '../src/world/BuildingGenerator.js';
+import { dashPolyline, findJunctions, cutPolyline } from '../src/world/RoadGenerator.js';
+import { lampPositions, generateStreetLamps } from '../src/world/StreetLamps.js';
+import { buildingHeight, pitchedRoof } from '../src/world/BuildingGenerator.js';
 import { lightingAt } from '../src/world/DayNight.js';
 
 let failures = 0;
@@ -188,6 +188,42 @@ section('Realistic city: markings, lamps, building heights');
   const guessed = new Set(Array.from({ length: 40 }, (_, id) => buildingHeight({ id, tags: { building: 'yes' } })));
   check('untagged buildings get varied heights (2-5 floors), not one flat slab', guessed.size === 4 && Math.min(...guessed) === 6 && Math.max(...guessed) === 15, [...guessed].join(','));
   check('checkpoint pace is seconds per km', paceSecondsPerKm(30, 300) === 100);
+
+  // Bug: car drove straight through lamp posts
+  const lamps = generateStreetLamps([road], flat(), 0, 0, ORIGIN.lat, ORIGIN.lng, 0);
+  const lampWorld = new CANNON.World();
+  lampWorld.addBody(lamps.userData.body);
+  const first = lampPositions([road], 0, 0, ORIGIN.lat, ORIGIN.lng)[0];
+  const hit = new CANNON.RaycastResult();
+  lampWorld.raycastClosest(new CANNON.Vec3(first.x - 3, 1, first.z), new CANNON.Vec3(first.x + 3, 1, first.z), {}, hit);
+  check('a lamp post blocks the car at bumper height', hit.hasHit && near(hit.hitPointWorld.x, first.x - 0.15, 0.05));
+
+  // A plus-shaped crossing: the shared node has 4 arms, the far ends 1, a way that just continues has 2
+  const ew = { tags: { highway: 'residential' }, geometry: [at(-50, 0), at(0, 0), at(50, 0)] };
+  const ns = { tags: { highway: 'residential' }, geometry: [at(0, -50), at(0, 0), at(0, 50)] };
+  const cont = { tags: { highway: 'residential' }, geometry: [at(50, 0), at(100, 0)] };
+  const j = findJunctions([ew, ns, cont]);
+  const key = (p) => `${p.lat.toFixed(7)},${p.lon.toFixed(7)}`;
+  check('junction finder: crossing has 4 arms, continuing way 2, dead end 1', j.get(key(at(0, 0))) === 4 && j.get(key(at(50, 0))) === 2 && j.get(key(at(-50, 0))) === 1);
+  const pts = [new THREE.Vector2(-50, 0), new THREE.Vector2(0, 0), new THREE.Vector2(50, 0)];
+  const pieces = cutPolyline(pts, [0, 50, 100], [50], 9);
+  check('lines and sidewalks stop 9 m before and after a junction', pieces.length === 2 && near(pieces[0].at(-1).x, -9, 0.01) && near(pieces[1][0].x, 9, 0.01));
+
+  // Gable roof on a 10 x 6 m house: ridge along the long side, every face points outwards/up
+  const house = { id: 3, tags: { building: 'house' }, geometry: square(0, 0, 10, 6) };
+  const v2 = [[0, 0], [10, 0], [10, 6], [0, 6], [0, 0]].map(([x, z]) => new THREE.Vector2(x, z));
+  const roof = pitchedRoof(house, v2, 6);
+  const rp = roof.attributes.position;
+  let outward = 0, top = -Infinity;
+  for (let t = 0; t < rp.count / 3; t++) {
+    const a = new THREE.Vector3().fromBufferAttribute(rp, t * 3), b = new THREE.Vector3().fromBufferAttribute(rp, t * 3 + 1), c = new THREE.Vector3().fromBufferAttribute(rp, t * 3 + 2);
+    const n = new THREE.Vector3().crossVectors(b.clone().sub(a), c.clone().sub(a));
+    const out = a.clone().add(b).add(c).divideScalar(3).sub(new THREE.Vector3(5, 6, 3));
+    if (n.dot(out) > 0) outward++;
+    top = Math.max(top, a.y, b.y, c.y);
+  }
+  check('house gets a gable roof with every face pointing outwards', outward === rp.count / 3 && near(top, 6 + 2.4, 0.01), `${outward}/${rp.count / 3} faces, ridge at ${top.toFixed(1)} m`);
+  check('offices and flat roofs get no pitched roof', pitchedRoof({ id: 4, tags: { building: 'office' } }, v2, 6) === null && pitchedRoof({ id: 5, tags: { building: 'house', 'roof:shape': 'flat' } }, v2, 6) === null);
 }
 
 // ------------------------------------------------------------------------------------------

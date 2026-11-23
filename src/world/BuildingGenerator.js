@@ -116,6 +116,8 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
 
       geometry.setAttribute('color', new THREE.BufferAttribute(colorData, 3));
       geometries.push(geometry);
+      const roof = pitchedRoof(building, shapePoints, baseY - 0.5 + height);
+      if (roof) geometries.push(roof);
 
     } catch (err) {
       // Skip invalid shapes
@@ -180,6 +182,22 @@ export function buildingHeight(building) {
  * @param {THREE.Vector2[]} points footprint in world x / z
  */
 function addCollisionBox(body, points, bottomY, height) {
+  const r = orientedRect(points);
+  if (!r || r.halfU < 0.25 || r.halfV < 0.25) return;
+  const center = new CANNON.Vec3(r.cx, bottomY + height / 2, r.cz);
+  // Rotating local +X about +Y by a gives (cos a, 0, -sin a); we want (ux, 0, uz)
+  const q = new CANNON.Quaternion();
+  q.setFromEuler(0, Math.atan2(-r.uz, r.ux), 0);
+  body.addShape(new CANNON.Box(new CANNON.Vec3(r.halfU, height / 2, r.halfV)), center, q);
+}
+
+/**
+ * Smallest box around the footprint aligned with its longest wall.
+ * @param {THREE.Vector2[]} points footprint in world x / z (vector .y holds z)
+ * @returns {{ ux: number, uz: number, cx: number, cz: number, halfU: number, halfV: number } | null}
+ *   u = along the longest wall, v = across it
+ */
+function orientedRect(points) {
   let bestLen = 0, ux = 1, uz = 0;
   for (let i = 0; i < points.length - 1; i++) {
     const dx = points[i + 1].x - points[i].x;
@@ -187,7 +205,7 @@ function addCollisionBox(body, points, bottomY, height) {
     const len = Math.hypot(dx, dz);
     if (len > bestLen) { bestLen = len; ux = dx / len; uz = dz / len; }
   }
-  if (bestLen < 0.5) return;
+  if (bestLen < 0.5) return null;
 
   let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
   for (const p of points) {
@@ -196,15 +214,62 @@ function addCollisionBox(body, points, bottomY, height) {
     minU = Math.min(minU, u); maxU = Math.max(maxU, u);
     minV = Math.min(minV, v); maxV = Math.max(maxV, v);
   }
-  const halfU = (maxU - minU) / 2, halfV = (maxV - minV) / 2;
-  if (halfU < 0.25 || halfV < 0.25) return;
-
   const cu = (minU + maxU) / 2, cv = (minV + maxV) / 2;
-  const center = new CANNON.Vec3(cu * ux - cv * uz, bottomY + height / 2, cu * uz + cv * ux);
-  // Rotating local +X about +Y by a gives (cos a, 0, -sin a); we want (ux, 0, uz)
-  const q = new CANNON.Quaternion();
-  q.setFromEuler(0, Math.atan2(-uz, ux), 0);
-  body.addShape(new CANNON.Box(new CANNON.Vec3(halfU, height / 2, halfV)), center, q);
+  return { ux, uz, cx: cu * ux - cv * uz, cz: cu * uz + cv * ux, halfU: (maxU - minU) / 2, halfV: (maxV - minV) / 2 };
+}
+
+const PITCHED_TYPES = new Set(['house', 'detached', 'semidetached_house', 'bungalow', 'farm', 'cabin', 'hut']);
+const ROOF_COLORS = [[0.55, 0.22, 0.16], [0.42, 0.24, 0.2], [0.32, 0.33, 0.36], [0.5, 0.3, 0.18]];
+
+/**
+ * Gable roof for small, roughly rectangular houses; the ridge runs along the longest wall.
+ * @returns {THREE.BufferGeometry | null}
+ */
+export function pitchedRoof(building, points, topY) {
+  const tags = building.tags || {};
+  const shape = tags['roof:shape'];
+  if (shape === 'flat') return null;
+  if (!PITCHED_TYPES.has(tags.building) && shape !== 'gabled' && shape !== 'hipped') return null;
+
+  const r = orientedRect(points);
+  if (!r || r.halfV < 1) return null;
+  const rectArea = 4 * r.halfU * r.halfV;
+  if (rectArea > 400 || Math.abs(polygonArea(points)) < 0.8 * rectArea) return null; // not house-like
+
+  const rise = Math.min(r.halfV * 0.8, 3.5);
+  const vx = -r.uz, vz = r.ux; // across the ridge
+  const at = (u, v, y) => new THREE.Vector3(r.cx + r.ux * u + vx * v, y, r.cz + r.uz * u + vz * v);
+  const { halfU: hu, halfV: hv } = r;
+  const c00 = at(-hu, -hv, topY), c10 = at(hu, -hv, topY), c11 = at(hu, hv, topY), c01 = at(-hu, hv, topY);
+  const r0 = at(-hu, 0, topY + rise), r1 = at(hu, 0, topY + rise);
+  const mid = new THREE.Vector3(r.cx, topY, r.cz);
+
+  const pos = [];
+  // Wind every triangle so it faces away from the house centre (outwards / upwards)
+  const tri = (a, b, c) => {
+    const n = new THREE.Vector3().crossVectors(b.clone().sub(a), c.clone().sub(a));
+    const out = a.clone().add(b).add(c).divideScalar(3).sub(mid);
+    if (n.dot(out) < 0) [b, c] = [c, b];
+    pos.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+  };
+  tri(c00, c10, r1); tri(c00, r1, r0);   // slope on the -v side
+  tri(c01, r0, r1); tri(c01, r1, c11);   // slope on the +v side
+  tri(c00, r0, c01); tri(c10, c11, r1);  // gable ends
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geometry.computeVertexNormals();
+  const [cr, cg, cb] = ROOF_COLORS[Math.abs(Number(building.id) || 0) % ROOF_COLORS.length];
+  const count = pos.length / 3;
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(new Array(count).fill([cr, cg, cb]).flat(), 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(new Array(count * 2).fill(PLAIN_UV), 2));
+  return geometry;
+}
+
+function polygonArea(points) {
+  let a = 0;
+  for (let i = 0; i < points.length - 1; i++) a += points[i].x * points[i + 1].y - points[i + 1].x * points[i].y;
+  return a / 2;
 }
 
 /**

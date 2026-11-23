@@ -21,8 +21,15 @@ export const DRIVABLE = new Set([
   'unclassified', 'service', 'living_street', 'road',
 ]);
 
-/** @type {{ bbox: object, roads: object[], buildings: object[], water: object[], greenery: object[] } | null} */
-let regionalCache = null;
+/**
+ * Downloaded areas, newest last. A chunk inside any of them is cut out of memory with no request.
+ * @type {{ bbox: object, roads: object[], buildings: object[], water: object[], greenery: object[] }[]}
+ */
+let regions = [];
+/** Region downloads in flight, so chunks that need the same area wait for one request */
+let pendingRegions = [];
+const MAX_REGIONS = 6;
+const REGION_RADIUS_M = 600;
 let lastOverpassTime = 0;
 let overpassIndex = 0;
 
@@ -248,19 +255,50 @@ function containsBox(outer, inner) {
  * Download a large area once (default radius 600 m) so chunks inside it are instant.
  * @returns {Promise<boolean>} true when the area is cached
  */
-export async function preloadRegion(originLat, originLng, radiusMeters = 600) {
+export async function preloadRegion(originLat, originLng, radiusMeters = REGION_RADIUS_M) {
   const bbox = getBoundingBox(originLat, originLng, radiusMeters);
   const parsed = await fetchOsmBox(bbox, PRELOAD_TIMEOUT_MS);
-  if (!parsed) {
-    regionalCache = null;
-    return false;
-  }
-  regionalCache = { bbox, ...withBounds(parsed) };
+  if (!parsed) return false;
+  addRegion({ bbox, ...withBounds(parsed) });
   return true;
 }
 
+function addRegion(region) {
+  regions.push(region);
+  if (regions.length > MAX_REGIONS) regions.shift(); // forget the oldest area; chunks are cached in IndexedDB anyway
+}
+
+/**
+ * Download the 1.2 km area around a chunk once, instead of one request per 200 m chunk.
+ * Chunks that need the same area while it downloads share the request.
+ * @returns {Promise<object | null>} the region, or null when the download failed
+ */
+// shortcut: a failed area is retried by the next chunk that needs it; remember failures if the API is often down.
+function regionFor(bbox) {
+  const pending = pendingRegions.find((p) => containsBox(p.bbox, bbox));
+  if (pending) return pending.promise;
+
+  const lat = (bbox.south + bbox.north) / 2;
+  const lng = (bbox.west + bbox.east) / 2;
+  const regionBox = getBoundingBox(lat, lng, REGION_RADIUS_M);
+  const entry = { bbox: regionBox, promise: null };
+  entry.promise = fetchOsmBox(regionBox, PRELOAD_TIMEOUT_MS)
+    .then((parsed) => {
+      if (!parsed) return null;
+      const region = { bbox: regionBox, ...withBounds(parsed) };
+      addRegion(region);
+      return region;
+    })
+    .finally(() => {
+      pendingRegions = pendingRegions.filter((p) => p !== entry);
+    });
+  pendingRegions.push(entry);
+  return entry.promise;
+}
+
 export function clearRegion() {
-  regionalCache = null;
+  regions = [];
+  pendingRegions = [];
 }
 
 /**
@@ -270,22 +308,25 @@ export function clearRegion() {
  *   `synthetic: true` marks made-up data; callers must not cache it.
  */
 export async function fetchChunkData(bbox) {
-  // 1. Inside the prefetched area: cut it out of memory. Empty is a valid answer (sea, fields).
-  if (regionalCache && containsBox(regionalCache.bbox, bbox)) {
-    return selectForChunk(regionalCache, bbox);
-  }
+  // 1. Inside a downloaded area: cut it out of memory. Empty is a valid answer (sea, fields).
+  const known = regions.find((r) => containsBox(r.bbox, bbox));
+  if (known) return selectForChunk(known, bbox);
 
-  // 2. Outside it: ask the OSM API for a slightly larger box, then select the same way.
+  // 2. Download the whole area around this chunk once; its neighbours will be instant
+  const region = await regionFor(bbox);
+  if (region) return selectForChunk(region, bbox);
+
+  // 3. That failed (too dense, timeout): ask the OSM API for just this chunk, then select the same way.
   const pad = 0.0002;
   const padded = { south: bbox.south - pad, north: bbox.north + pad, west: bbox.west - pad, east: bbox.east + pad };
   const fromApi = await fetchOsmBox(padded, CHUNK_TIMEOUT_MS);
   if (fromApi) return selectForChunk(withBounds(fromApi), bbox);
 
-  // 3. Overpass as a fallback
+  // 4. Overpass as a fallback
   const fromOverpass = await fetchOverpassBox(padded);
   if (fromOverpass) return selectForChunk(withBounds(fromOverpass), bbox);
 
-  // 4. Offline: something to drive on, clearly flagged as fake
+  // 5. Offline: something to drive on, clearly flagged as fake
   console.warn('All map services unreachable — using synthetic chunk');
   return { ...generateProceduralFallback(bbox), synthetic: true };
 }

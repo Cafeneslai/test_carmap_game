@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { ROAD_WIDTHS, ROAD_Y_OFFSET } from '../config.js';
 import { latLngToMeters } from '../data/GeoUtils.js';
 import { getElevationAt } from './ElevationUtils.js';
+import { DRIVABLE } from '../data/OSMFetcher.js';
 
 /**
  * Generate merged road mesh from OSM way elements
@@ -20,6 +21,7 @@ import { getElevationAt } from './ElevationUtils.js';
  */
 export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, originLat, originLng, baseElevation = null) {
   const geometries = [];
+  const junctions = findJunctions(roads);
 
   for (const road of roads) {
     if (!road.geometry || road.geometry.length < 2) continue;
@@ -39,21 +41,49 @@ export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, or
       geometries.push(roadGeom);
     }
 
-    // Painted markings
-    const mark = (polyline, halfWidth, color, offset = 0) => {
-      const g = createRoadStrip(polyline, halfWidth, elevationData, chunkWorldX, chunkWorldZ, baseElevation, 0.04, offset);
+    // Painted markings, sidewalks and crosswalks; all of them stop short of junctions
+    const major = MAJOR_ROADS.has(highwayType);
+    const minor = MINOR_MARKED.has(highwayType) && width >= 5;
+    if (!major && !minor) continue;
+
+    const mark = (polyline, halfWidth, color, offset = 0, lift = 0.04) => {
+      const g = createRoadStrip(polyline, halfWidth, elevationData, chunkWorldX, chunkWorldZ, baseElevation, lift, offset);
       if (g) geometries.push(paint(g, color));
     };
-    const major = MAJOR_ROADS.has(highwayType);
     const oneway = road.tags?.oneway === 'yes' || highwayType === 'motorway';
-    if (major) {
-      // Solid edge lines, and a solid centre line on two-way roads (dashed lane line on one-way)
-      mark(points, 0.12, WHITE, width / 2 - 0.5);
-      mark(points, 0.12, WHITE, -(width / 2 - 0.5));
-      if (oneway) for (const dash of dashPolyline(points, 3, 6)) mark(dash, 0.1, WHITE);
-      else mark(points, 0.15, YELLOW);
-    } else if (MINOR_MARKED.has(highwayType) && width >= 5 && !oneway) {
-      for (const dash of dashPolyline(points, 3, 6)) mark(dash, 0.1, WHITE);
+    const cum = cumulativeLengths(points);
+    const stops = road.geometry
+      .map((n, i) => (junctions.get(nodeKey(n)) >= 3 ? cum[i] : null))
+      .filter((s) => s !== null);
+    const pieces = cutPolyline(points, cum, stops, JUNCTION_CLEAR);
+
+    for (const piece of pieces) {
+      if (major) {
+        // Solid edge lines, and a solid centre line on two-way roads (dashed lane line on one-way)
+        mark(piece, 0.12, WHITE, width / 2 - 0.5);
+        mark(piece, 0.12, WHITE, -(width / 2 - 0.5));
+        if (oneway) for (const dash of dashPolyline(piece, 3, 6)) mark(dash, 0.1, WHITE);
+        else mark(piece, 0.15, YELLOW);
+      } else if (!oneway) {
+        for (const dash of dashPolyline(piece, 3, 6)) mark(dash, 0.1, WHITE);
+      }
+      if (highwayType !== 'motorway' && highwayType !== 'trunk') {
+        mark(piece, SIDEWALK_WIDTH / 2, SIDEWALK, width / 2 + SIDEWALK_WIDTH / 2, 0.02);
+        mark(piece, SIDEWALK_WIDTH / 2, SIDEWALK, -(width / 2 + SIDEWALK_WIDTH / 2), 0.02);
+      }
+    }
+
+    // Zebra crossing on every arm of a junction, just past where the sidewalks end
+    if (highwayType === 'motorway' || highwayType === 'trunk') continue;
+    const total = cum[cum.length - 1];
+    for (const s of stops) {
+      for (const at of [s - JUNCTION_CLEAR + 1.5, s + JUNCTION_CLEAR - 1.5]) {
+        if (at < 1.5 || at > total - 1.5) continue;
+        if (stops.some((o) => o !== s && Math.abs(o - at) < JUNCTION_CLEAR)) continue; // too close to another junction
+        const { p, dir } = pointAt(points, cum, at);
+        const seg = [p.clone().addScaledVector(dir, -1.5), p.clone().addScaledVector(dir, 1.5)];
+        for (let off = -(width / 2 - 0.7); off <= width / 2 - 0.7 + 1e-6; off += 1) mark(seg, 0.25, WHITE, off);
+      }
     }
   }
 
@@ -84,6 +114,75 @@ export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, or
 const MAJOR_ROADS = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary']);
 const MINOR_MARKED = new Set(['residential', 'unclassified', 'living_street']);
 const WHITE = [0.92, 0.92, 0.9];
+const SIDEWALK = [0.6, 0.6, 0.58];
+const SIDEWALK_WIDTH = 2;
+const JUNCTION_CLEAR = 9; // metres either side of a junction kept free of lines and sidewalks
+
+const nodeKey = (n) => `${n.lat.toFixed(7)},${n.lon.toFixed(7)}`;
+
+/**
+ * Number of road arms meeting at each node: an end of a way counts 1, a node inside a way counts 2.
+ * Three or more arms is a real junction (two is just a way continuing as another way).
+ * @returns {Map<string, number>}
+ */
+export function findJunctions(roads) {
+  const arms = new Map();
+  for (const road of roads) {
+    if (!DRIVABLE.has(road.tags?.highway) || !road.geometry) continue;
+    const last = road.geometry.length - 1;
+    road.geometry.forEach((n, i) => {
+      const k = nodeKey(n);
+      arms.set(k, (arms.get(k) || 0) + (i === 0 || i === last ? 1 : 2));
+    });
+  }
+  return arms;
+}
+
+function cumulativeLengths(points) {
+  const cum = [0];
+  for (let i = 1; i < points.length; i++) cum.push(cum[i - 1] + points[i].distanceTo(points[i - 1]));
+  return cum;
+}
+
+/** Point and unit direction at a distance along a polyline */
+function pointAt(points, cum, s) {
+  let i = 1;
+  while (i < points.length - 1 && cum[i] < s) i++;
+  const a = points[i - 1], b = points[i];
+  const len = cum[i] - cum[i - 1] || 1;
+  const p = a.clone().lerp(b, (s - cum[i - 1]) / len);
+  return { p, dir: b.clone().sub(a).normalize() };
+}
+
+/**
+ * The parts of a polyline more than `clear` metres (along the line) from every stop.
+ * @param {number[]} stops distances along the line
+ * @returns {THREE.Vector2[][]}
+ */
+export function cutPolyline(points, cum, stops, clear) {
+  const total = cum[cum.length - 1];
+  // Kept intervals = [0, total] minus [stop - clear, stop + clear]
+  let keep = [[0, total]];
+  for (const s of stops) {
+    const next = [];
+    for (const [a, b] of keep) {
+      if (s + clear <= a || s - clear >= b) next.push([a, b]);
+      else {
+        if (s - clear > a) next.push([a, s - clear]);
+        if (s + clear < b) next.push([s + clear, b]);
+      }
+    }
+    keep = next;
+  }
+  return keep
+    .filter(([a, b]) => b - a > 1)
+    .map(([a, b]) => {
+      const piece = [pointAt(points, cum, a).p];
+      for (let i = 0; i < points.length; i++) if (cum[i] > a && cum[i] < b) piece.push(points[i].clone());
+      piece.push(pointAt(points, cum, b).p);
+      return piece;
+    });
+}
 const YELLOW = [0.95, 0.75, 0.15];
 
 function paint(geometry, [r, g, b]) {

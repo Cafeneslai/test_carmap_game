@@ -9,6 +9,17 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    sourcemap: true
+    sourcemap: true,
+    // Libraries change far less often than game code, so browsers keep them cached between releases
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          three: ['three'],
+          physics: ['cannon-es'],
+          map: ['leaflet'],
+        },
+      },
+    },
+    chunkSizeWarningLimit: 600, // three.js alone is ~550 kB minified
   }
 });
