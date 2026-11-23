@@ -39,20 +39,21 @@ export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, or
       geometries.push(roadGeom);
     }
 
-    // Generate center line for major roads
-    if (['motorway', 'trunk', 'primary', 'secondary', 'tertiary'].includes(highwayType)) {
-      const lineGeom = createRoadStrip(points, 0.15, elevationData, chunkWorldX, chunkWorldZ, baseElevation, 0.04);
-      if (lineGeom) {
-        // We'll handle marking color via vertex colors
-        const colors = new Float32Array(lineGeom.attributes.position.count * 3);
-        for (let i = 0; i < colors.length; i += 3) {
-          colors[i] = 1;     // R
-          colors[i + 1] = 1; // G
-          colors[i + 2] = 0.7; // B — yellowish
-        }
-        lineGeom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-        geometries.push(lineGeom);
-      }
+    // Painted markings
+    const mark = (polyline, halfWidth, color, offset = 0) => {
+      const g = createRoadStrip(polyline, halfWidth, elevationData, chunkWorldX, chunkWorldZ, baseElevation, 0.04, offset);
+      if (g) geometries.push(paint(g, color));
+    };
+    const major = MAJOR_ROADS.has(highwayType);
+    const oneway = road.tags?.oneway === 'yes' || highwayType === 'motorway';
+    if (major) {
+      // Solid edge lines, and a solid centre line on two-way roads (dashed lane line on one-way)
+      mark(points, 0.12, WHITE, width / 2 - 0.5);
+      mark(points, 0.12, WHITE, -(width / 2 - 0.5));
+      if (oneway) for (const dash of dashPolyline(points, 3, 6)) mark(dash, 0.1, WHITE);
+      else mark(points, 0.15, YELLOW);
+    } else if (MINOR_MARKED.has(highwayType) && width >= 5 && !oneway) {
+      for (const dash of dashPolyline(points, 3, 6)) mark(dash, 0.1, WHITE);
     }
   }
 
@@ -80,6 +81,51 @@ export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, or
   return mesh;
 }
 
+const MAJOR_ROADS = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary']);
+const MINOR_MARKED = new Set(['residential', 'unclassified', 'living_street']);
+const WHITE = [0.92, 0.92, 0.9];
+const YELLOW = [0.95, 0.75, 0.15];
+
+function paint(geometry, [r, g, b]) {
+  const colors = new Float32Array(geometry.attributes.position.count * 3);
+  for (let i = 0; i < colors.length; i += 3) {
+    colors[i] = r; colors[i + 1] = g; colors[i + 2] = b;
+  }
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  return geometry;
+}
+
+/**
+ * Cut a polyline into dashes.
+ * @param {THREE.Vector2[]} points
+ * @returns {THREE.Vector2[][]} one short polyline per dash
+ */
+export function dashPolyline(points, dash, gap) {
+  const dashes = [];
+  let current = null;
+  let pos = 0; // distance into the current dash+gap period
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i], b = points[i + 1];
+    const len = a.distanceTo(b);
+    let t = 0;
+    while (t < len) {
+      const inDash = pos < dash;
+      const step = Math.min(len - t, inDash ? dash - pos : dash + gap - pos);
+      if (inDash) {
+        const p0 = a.clone().lerp(b, t / len);
+        const p1 = a.clone().lerp(b, (t + step) / len);
+        if (!current) { current = [p0]; dashes.push(current); }
+        current.push(p1);
+      }
+      t += step;
+      pos += step;
+      if (inDash && pos >= dash) current = null; // this dash is finished
+      if (pos >= dash + gap) pos = 0;
+    }
+  }
+  return dashes.filter((d) => d.length >= 2 && d[0].distanceTo(d[d.length - 1]) > 0.5);
+}
+
 /**
  * Create a road strip from a polyline
  * 
@@ -90,7 +136,7 @@ export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, or
  * @param {number} chunkWorldZ
  * @returns {THREE.BufferGeometry | null}
  */
-function createRoadStrip(points, halfWidth, elevationData, chunkWorldX, chunkWorldZ, baseElevation = null, yLift = 0) {
+function createRoadStrip(points, halfWidth, elevationData, chunkWorldX, chunkWorldZ, baseElevation = null, yLift = 0, offset = 0) {
   if (points.length < 2) return null;
 
   const vertices = [];
@@ -115,15 +161,17 @@ function createRoadStrip(points, halfWidth, elevationData, chunkWorldX, chunkWor
 
     // Perpendicular (normal)
     const normal = new THREE.Vector2(-dir.y, dir.x);
+    // Markings such as edge lines run parallel to the centre line, shifted sideways
+    const center = new THREE.Vector2(points[i].x + normal.x * offset, points[i].y + normal.y * offset);
 
     // Left and right vertices
     const left = new THREE.Vector2(
-      points[i].x + normal.x * halfWidth,
-      points[i].y + normal.y * halfWidth
+      center.x + normal.x * halfWidth,
+      center.y + normal.y * halfWidth
     );
     const right = new THREE.Vector2(
-      points[i].x - normal.x * halfWidth,
-      points[i].y - normal.y * halfWidth
+      center.x - normal.x * halfWidth,
+      center.y - normal.y * halfWidth
     );
 
     // Add vertices (y = terrain elevation + offset)

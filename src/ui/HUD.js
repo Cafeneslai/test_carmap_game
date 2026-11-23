@@ -76,7 +76,10 @@ export class HUD {
     this.missionEl.classList.remove('hidden');
     if (!info || info.distance === 0) {
       this.missionArrow.style.visibility = 'hidden';
-      this.missionMain.textContent = info ? `✅ ถึงแล้ว! เช็กพอยต์ที่ ${info.count}` : '🏁 กำลังหาจุดเช็กพอยต์...';
+      this.missionMain.textContent = info
+        ? `✅ ถึงแล้ว! เช็กพอยต์ที่ ${info.count}${info.newRecord ? ' · 🏆 สถิติใหม่!' : ''}`
+        : '🏁 กำลังหาจุดเช็กพอยต์...';
+      if (info) this.missionSub.textContent = statsText(info);
       return;
     }
     // Screen up = straight ahead; a target to the car's left (+angle) turns the arrow counter-clockwise
@@ -84,8 +87,7 @@ export class HUD {
     this.missionArrow.style.visibility = 'visible';
     this.missionArrow.style.transform = `rotate(${(-rel * 180) / Math.PI}deg)`;
     this.missionMain.textContent = `🏁 ${Math.round(info.distance)} ม. · ${formatTime(info.elapsed)}`;
-    const last = info.lastTime === null ? '' : ` · ล่าสุด ${formatTime(info.lastTime)}`;
-    this.missionSub.textContent = `${info.name} · ผ่านแล้ว ${info.count}${last}`;
+    this.missionSub.textContent = `${info.name} · ${statsText(info)}`;
   }
 
   /** @param {string} text "HH:MM" */
@@ -115,4 +117,10 @@ export class HUD {
 function formatTime(seconds) {
   const s = Math.floor(seconds);
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+/** "ผ่านแล้ว 3 (รวม 12) · ดีที่สุด 1:05/กม." */
+function statsText(info) {
+  const best = info.bestPace === null ? '' : ` · ดีที่สุด ${formatTime(info.bestPace)}/กม.`;
+  return `ผ่านแล้ว ${info.count} (รวม ${info.total})${best}`;
 }

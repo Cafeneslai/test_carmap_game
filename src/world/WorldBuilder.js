@@ -12,6 +12,7 @@ import { generateRoads } from './RoadGenerator.js';
 import { generateBuildings } from './BuildingGenerator.js';
 import { generateWater } from './WaterGenerator.js';
 import { placeVegetation } from './VegetationPlacer.js';
+import { generateStreetLamps } from './StreetLamps.js';
 
 // Bump when the shape or orientation of cached data changes. v3: elevation comes from the shared
 // world lattice (ElevationField), rows run north->south, buildings belong to a single chunk.
@@ -114,6 +115,8 @@ export class WorldBuilder {
     if (osmData.roads.length > 0) {
       const roads = generateRoads(osmData.roads, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base);
       if (roads) chunk.meshGroup.add(roads);
+      const lamps = generateStreetLamps(osmData.roads, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base);
+      if (lamps) chunk.meshGroup.add(lamps);
     }
 
     // 3. Buildings

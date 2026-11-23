@@ -13,6 +13,7 @@ import { CameraController } from '../vehicle/CameraController.js';
 import { EngineSound } from '../vehicle/EngineSound.js';
 import { Mission } from './Mission.js';
 import { DayNight } from '../world/DayNight.js';
+import { setNightLevel } from '../world/NightLights.js';
 import { LocationPicker } from '../ui/LocationPicker.js';
 import { LoadingScreen } from '../ui/LoadingScreen.js';
 import { HUD } from '../ui/HUD.js';
@@ -163,7 +164,7 @@ export class Game {
       this.headlight.target.position.set(0, 0, 25);
       this.carModel.group.add(this.headlight, this.headlight.target);
 
-      this.mission = new Mission(this.scene);
+      this.mission = new Mission(this.scene, `${location.lat.toFixed(3)},${location.lng.toFixed(3)}`);
 
       // 4. Setup camera
       this.cameraController = new CameraController(this.camera, this.carController);
@@ -305,6 +306,7 @@ export class Game {
       // Sun, sky and headlights follow the time of day
       this.dayNight.update(delta, pos);
       if (this.headlight) this.headlight.intensity = 40 * (1 - this.dayNight.daylight);
+      setNightLevel(1 - this.dayNight.daylight); // windows, street lamps
       this.hud.updateClock(this.dayNight.clock);
 
       // Checkpoint run

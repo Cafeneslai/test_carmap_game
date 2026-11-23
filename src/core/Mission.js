@@ -10,6 +10,23 @@ const MIN_DIST = 150;   // m, so a checkpoint is never right next to the car
 const MAX_DIST = 450;   // m, stays inside the loaded chunks (view distance 3 x 200 m)
 const REACH_DIST = 12;  // m, counts as reached
 const BEAM_HEIGHT = 60;
+const STATS_KEY = 'carmap.checkpointStats';
+
+/**
+ * Pace = seconds per km of straight-line distance, so runs to near and far checkpoints compare fairly.
+ * @returns {number}
+ */
+export function paceSecondsPerKm(seconds, meters) {
+  return meters > 0 ? (seconds / meters) * 1000 : Infinity;
+}
+
+function loadStats() {
+  try {
+    return JSON.parse(localStorage.getItem(STATS_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
 
 /**
  * A random point on a drivable road between minDist and maxDist from the car.
@@ -33,9 +50,17 @@ export function pickCheckpoint(roads, originLat, originLng, from, minDist = MIN_
 }
 
 export class Mission {
-  /** @param {THREE.Scene} scene */
-  constructor(scene) {
+  /**
+   * @param {THREE.Scene} scene
+   * @param {string} locationKey best pace and total checkpoints are kept per start location
+   */
+  constructor(scene, locationKey = '') {
     this.scene = scene;
+    this.locationKey = locationKey;
+    const stats = loadStats()[locationKey] || {};
+    this.bestPace = stats.bestPace ?? null; // seconds per km
+    this.total = stats.total ?? 0;          // checkpoints reached here, all visits
+    this.newRecord = false;
     this.target = null;
     this.count = 0;
     this.elapsed = 0;  // seconds on the current checkpoint
@@ -79,6 +104,7 @@ export class Mission {
       this.marker.position.set(this.target.x, y, this.target.z);
       this.marker.visible = true;
       this.elapsed = 0;
+      this.target.startDist = Math.hypot(this.target.x - carPos.x, this.target.z - carPos.z);
     }
 
     this.elapsed += delta;
@@ -90,19 +116,33 @@ export class Mission {
     if (distance < REACH_DIST) {
       this.count++;
       this.lastTime = this.elapsed;
+      this._record(paceSecondsPerKm(this.elapsed, this.target.startDist));
       this.target = null;
       this.marker.visible = false;
       this.retryIn = 2; // keep "reached!" on screen for a moment
       return this._reachedInfo();
     }
 
-    return { distance, angle: Math.atan2(dx, dz), elapsed: this.elapsed, count: this.count, lastTime: this.lastTime, name: this.target.name };
+    return { distance, angle: Math.atan2(dx, dz), elapsed: this.elapsed, count: this.count, lastTime: this.lastTime, name: this.target.name, bestPace: this.bestPace, total: this.total, newRecord: false };
+  }
+
+  _record(pace) {
+    this.total++;
+    this.newRecord = this.bestPace === null || pace < this.bestPace;
+    if (this.newRecord) this.bestPace = pace;
+    try {
+      const all = loadStats();
+      all[this.locationKey] = { bestPace: this.bestPace, total: this.total };
+      localStorage.setItem(STATS_KEY, JSON.stringify(all));
+    } catch {
+      // storage blocked: stats last for this visit only
+    }
   }
 
   /** HUD info while there is no target: "reached" after the first checkpoint, otherwise null (searching) */
   _reachedInfo() {
     if (this.count === 0) return null;
-    return { distance: 0, angle: 0, elapsed: 0, count: this.count, lastTime: this.lastTime, name: '' };
+    return { distance: 0, angle: 0, elapsed: 0, count: this.count, lastTime: this.lastTime, name: '', bestPace: this.bestPace, total: this.total, newRecord: this.newRecord };
   }
 
   dispose() {

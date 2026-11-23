@@ -7,6 +7,10 @@ import * as CANNON from 'cannon-es';
 import { DEFAULT_BUILDING_HEIGHT, METERS_PER_FLOOR, BUILDING_COLORS } from '../config.js';
 import { latLngToMeters } from '../data/GeoUtils.js';
 import { getElevationAt } from './ElevationUtils.js';
+import { getWindowTextures, registerBuildingMaterial } from './NightLights.js';
+
+/** Roof/floor UV in metres that lands on the plain wall margin of the window texture */
+const PLAIN_UV = 0.3;
 
 /**
  * Generate merged building mesh from OSM building elements
@@ -30,13 +34,7 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
     if (!building.geometry || building.geometry.length < 3) continue;
 
     // Calculate height
-    let height = DEFAULT_BUILDING_HEIGHT;
-    if (building.tags?.height) {
-      height = parseFloat(building.tags.height) || DEFAULT_BUILDING_HEIGHT;
-    } else if (building.tags?.['building:levels']) {
-      const levels = parseInt(building.tags['building:levels']) || 3;
-      height = levels * METERS_PER_FLOOR;
-    }
+    const height = buildingHeight(building);
 
     // Convert coordinates to local positions
     const shapePoints = [];
@@ -95,8 +93,9 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
       const colorHex = BUILDING_COLORS[Math.abs(Number(building.id) || 0) % BUILDING_COLORS.length];
       const color = new THREE.Color(colorHex);
 
-      // Add vertex colors
+      // Add vertex colors; roofs get a UV on the plain part of the window texture
       const posCount = geometry.attributes.position.count;
+      const uv = geometry.attributes.uv;
       const colorData = new Float32Array(posCount * 3);
       for (let i = 0; i < posCount; i++) {
         // Slight variation for walls vs roof
@@ -108,6 +107,7 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
         // Darken walls slightly, roof stays original color
         const isTopFace = Math.abs(normal.y) > 0.9;
         const factor = isTopFace ? 1.0 : 0.75;
+        if (isTopFace && uv) uv.setXY(i, PLAIN_UV, PLAIN_UV);
 
         colorData[i * 3] = color.r * factor;
         colorData[i * 3 + 1] = color.g * factor;
@@ -130,12 +130,17 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
 
   if (!mergedGeometry) return null;
 
+  const textures = getWindowTextures();
   const material = new THREE.MeshStandardMaterial({
     vertexColors: true,
     roughness: 0.8,
     metalness: 0.1,
     flatShading: true,
+    map: textures?.map ?? null,
+    emissive: textures ? 0xffffff : 0x000000,
+    emissiveMap: textures?.emissiveMap ?? null,
   });
+  if (textures) registerBuildingMaterial(material); // windows light up at night
 
   const mesh = new THREE.Mesh(mergedGeometry, material);
   mesh.castShadow = true;
@@ -150,6 +155,23 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
   }
 
   return group;
+}
+
+/**
+ * Height from OSM tags; untagged buildings get 2-5 floors picked from their id, so a block of
+ * untagged buildings is not one flat slab (deterministic, the same on every visit).
+ */
+export function buildingHeight(building) {
+  const tags = building.tags || {};
+  const h = parseFloat(tags.height);
+  if (h > 0) return h;
+  const levels = parseInt(tags['building:levels']);
+  if (levels > 0) return levels * METERS_PER_FLOOR;
+  if (tags.building === 'house' || tags.building === 'detached' || tags.building === 'garage' || tags.building === 'shed') {
+    return tags.building === 'garage' || tags.building === 'shed' ? METERS_PER_FLOOR : 2 * METERS_PER_FLOOR;
+  }
+  const id = Math.abs(Number(building.id) || 0);
+  return (2 + ((id * 7919) % 4)) * METERS_PER_FLOOR || DEFAULT_BUILDING_HEIGHT;
 }
 
 /**
@@ -203,6 +225,7 @@ function mergeGeometries(geometries) {
   const positions = new Float32Array(totalVerts * 3);
   const normals = new Float32Array(totalVerts * 3);
   const colors = new Float32Array(totalVerts * 3);
+  const uvs = new Float32Array(totalVerts * 2);
   const indices = new Uint32Array(totalIndices);
 
   let vOffset = 0;
@@ -224,6 +247,10 @@ function mergeGeometries(geometries) {
       colors.set(g.attributes.color.array, vOffset * 3);
     }
 
+    if (g.attributes.uv) {
+      uvs.set(g.attributes.uv.array, vOffset * 2);
+    }
+
     // Indices
     if (g.index) {
       for (let i = 0; i < g.index.count; i++) {
@@ -239,6 +266,7 @@ function mergeGeometries(geometries) {
   merged.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   merged.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
   merged.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  merged.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
   if (totalIndices > 0) {
     merged.setIndex(new THREE.BufferAttribute(indices, 1));
   }

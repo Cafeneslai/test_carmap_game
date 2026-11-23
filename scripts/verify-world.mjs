@@ -20,7 +20,10 @@ import { parseOsmXml, findSpawnPoint } from '../src/data/OSMFetcher.js';
 import { ElevationField } from '../src/data/ElevationField.js';
 import { headingToBearingDeg } from '../src/ui/compass.js';
 import { CHUNK_SIZE } from '../src/config.js';
-import { pickCheckpoint } from '../src/core/Mission.js';
+import { pickCheckpoint, paceSecondsPerKm } from '../src/core/Mission.js';
+import { dashPolyline } from '../src/world/RoadGenerator.js';
+import { lampPositions } from '../src/world/StreetLamps.js';
+import { buildingHeight } from '../src/world/BuildingGenerator.js';
 import { lightingAt } from '../src/world/DayNight.js';
 
 let failures = 0;
@@ -162,6 +165,29 @@ section('Checkpoint mission and day/night');
   const noon = lightingAt(12), midnight = lightingAt(0), dusk = lightingAt(18.2);
   check('noon is full daylight, midnight is dark', noon.daylight > 0.99 && midnight.daylight === 0, `noon ${noon.daylight.toFixed(2)}, midnight ${midnight.daylight.toFixed(2)}`);
   check('sky is blue at noon, dark at midnight, orange-ish at dusk', noon.sky.b > noon.sky.r && midnight.sky.getHSL({}).l < 0.15 && dusk.sky.r > dusk.sky.b);
+}
+
+// ------------------------------------------------------------------------------------------
+section('Realistic city: markings, lamps, building heights');
+{
+  const line = [new THREE.Vector2(0, 0), new THREE.Vector2(45, 0), new THREE.Vector2(90, 0)];
+  const dashes = dashPolyline(line, 3, 6);
+  const lens = dashes.map((d) => d[0].distanceTo(d[d.length - 1]));
+  check('a 90 m road gets 10 dashes of 3 m (dash 3 m, gap 6 m)', dashes.length === 10 && lens.every((l) => near(l, 3, 0.01)), `${dashes.length} dashes`);
+  check('a dash crossing a road bend stays one piece', dashPolyline([new THREE.Vector2(0, 0), new THREE.Vector2(1.5, 0), new THREE.Vector2(1.5, 5)], 3, 6)[0].length === 3);
+
+  // A 600 m east-west road through three chunks: every lamp is placed once, about 35 m apart
+  const road = { tags: { highway: 'primary' }, geometry: [at(-300, 10), at(300, 10)] };
+  const perChunk = [-1, 0, 1].map((cx) => lampPositions([road], cx * CHUNK_SIZE, 0, ORIGIN.lat, ORIGIN.lng));
+  const all = perChunk.flat().sort((a, b) => a.x - b.x);
+  check('street lamps are not duplicated across chunks and are ~35 m apart', all.length === 17 && all.slice(1).every((p, i) => near(p.x - all[i].x, 35, 0.5)), `${all.length} lamps`);
+  check('lamps stand beside the road, not on it (primary is 10 m wide)', all.every((p) => near(Math.abs(p.z - 10), 6, 0.3)));
+  check('footways get no street lamps', lampPositions([{ tags: { highway: 'footway' }, geometry: road.geometry }], 0, 0, ORIGIN.lat, ORIGIN.lng).length === 0);
+
+  check('OSM height and levels win over the guess', buildingHeight({ tags: { height: '42' } }) === 42 && buildingHeight({ tags: { 'building:levels': '10' } }) === 30);
+  const guessed = new Set(Array.from({ length: 40 }, (_, id) => buildingHeight({ id, tags: { building: 'yes' } })));
+  check('untagged buildings get varied heights (2-5 floors), not one flat slab', guessed.size === 4 && Math.min(...guessed) === 6 && Math.max(...guessed) === 15, [...guessed].join(','));
+  check('checkpoint pace is seconds per km', paceSecondsPerKm(30, 300) === 100);
 }
 
 // ------------------------------------------------------------------------------------------

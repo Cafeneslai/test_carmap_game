@@ -1,0 +1,89 @@
+/**
+ * StreetLamps.js — lamp posts along real roads, with a glowing bulb and a light pool that show at night.
+ * No real lights: hundreds of PointLights would kill the frame rate, so the glow is a ground decal.
+ */
+
+import * as THREE from 'three';
+import { ROAD_WIDTHS, CHUNK_SIZE } from '../config.js';
+import { latLngToMeters } from '../data/GeoUtils.js';
+import { getElevationAt } from './ElevationUtils.js';
+import { lampBulbMaterial, lampPoleMaterial, lampGlowMaterial } from './NightLights.js';
+
+const LIT_ROADS = new Set([
+  'motorway', 'trunk', 'primary', 'secondary', 'tertiary',
+  'motorway_link', 'trunk_link', 'primary_link', 'secondary_link', 'tertiary_link',
+  'residential', 'unclassified', 'living_street',
+]);
+const SPACING = 35;            // metres between lamps along a road
+const POLE_HEIGHT = 7;
+const MAX_LAMPS_PER_CHUNK = 150;
+
+const poleGeometry = new THREE.CylinderGeometry(0.08, 0.12, POLE_HEIGHT, 6).translate(0, POLE_HEIGHT / 2, 0);
+const bulbGeometry = new THREE.BoxGeometry(0.5, 0.2, 0.9).translate(0, POLE_HEIGHT, 0);
+const glowGeometry = new THREE.CircleGeometry(7, 20).rotateX(-Math.PI / 2).translate(0, 0.12, 0);
+
+/**
+ * Positions of the lamps that belong to this chunk. Pure, for tests.
+ * Lamps alternate sides and stand just off the road edge; a lamp belongs to the chunk it stands in,
+ * so a road crossing several chunks gets each lamp exactly once.
+ * @returns {{ x: number, z: number }[]}
+ */
+export function lampPositions(roads, chunkWorldX, chunkWorldZ, originLat, originLng) {
+  const out = [];
+  const half = CHUNK_SIZE / 2;
+  for (const road of roads) {
+    const type = road.tags?.highway;
+    if (!LIT_ROADS.has(type) || road.tags?.tunnel === 'yes') continue;
+    const side = (ROAD_WIDTHS[type] ?? 5) / 2 + 1;
+    const pts = road.geometry.map((n) => latLngToMeters(n.lat, n.lon, originLat, originLng));
+
+    let next = SPACING / 2; // distance along the road of the next lamp
+    let walked = 0;
+    let count = 0;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1];
+      const len = Math.hypot(b.x - a.x, b.z - a.z);
+      if (len < 0.01) continue;
+      const nx = -(b.z - a.z) / len, nz = (b.x - a.x) / len;
+      while (next <= walked + len) {
+        const t = (next - walked) / len;
+        const s = count % 2 ? side : -side;
+        const x = a.x + (b.x - a.x) * t + nx * s;
+        const z = a.z + (b.z - a.z) * t + nz * s;
+        if (x >= chunkWorldX - half && x < chunkWorldX + half && z >= chunkWorldZ - half && z < chunkWorldZ + half) {
+          out.push({ x, z });
+          if (out.length >= MAX_LAMPS_PER_CHUNK) return out;
+        }
+        count++;
+        next += SPACING;
+      }
+      walked += len;
+    }
+  }
+  return out;
+}
+
+/** @returns {THREE.Group | null} */
+export function generateStreetLamps(roads, elevationData, chunkWorldX, chunkWorldZ, originLat, originLng, baseElevation) {
+  const positions = lampPositions(roads, chunkWorldX, chunkWorldZ, originLat, originLng);
+  if (positions.length === 0) return null;
+
+  const group = new THREE.Group();
+  group.name = 'streetlamps';
+  const poles = new THREE.InstancedMesh(poleGeometry, lampPoleMaterial, positions.length);
+  const bulbs = new THREE.InstancedMesh(bulbGeometry, lampBulbMaterial, positions.length);
+  const glows = new THREE.InstancedMesh(glowGeometry, lampGlowMaterial, positions.length);
+  poles.castShadow = true;
+  for (const m of [poles, bulbs, glows]) m.userData.shared = true; // geometry/material shared by all chunks
+
+  const matrix = new THREE.Matrix4();
+  positions.forEach(({ x, z }, i) => {
+    const y = getElevationAt(x - chunkWorldX, z - chunkWorldZ, elevationData, baseElevation);
+    matrix.makeTranslation(x, y, z);
+    poles.setMatrixAt(i, matrix);
+    bulbs.setMatrixAt(i, matrix);
+    glows.setMatrixAt(i, matrix);
+  });
+  group.add(poles, bulbs, glows);
+  return group;
+}
