@@ -18,6 +18,7 @@ import { placeVegetation } from '../src/world/VegetationPlacer.js';
 import { getElevationAt } from '../src/world/ElevationUtils.js';
 import { metersToLatLng } from '../src/data/GeoUtils.js';
 import { parseOsmXml, findSpawnPoint, landcoverType } from '../src/data/OSMFetcher.js';
+import { dropOverlapping } from '../src/data/OvertureBuildings.js';
 import { GROUND_COLORS } from '../src/world/GroundPainter.js';
 import { ElevationField } from '../src/data/ElevationField.js';
 import { headingToBearingDeg } from '../src/ui/compass.js';
@@ -377,6 +378,17 @@ section('OSM parsing and spawn point');
     if (Math.abs(mx) < 19 && Math.abs(mz) < 19) onIsland++;
   }
   check('an island (inner ring) stays dry', onIsland === 0, `${onIsland} water triangles on the island`);
+
+  // Bug: OSM has no buildings in many places (Burapha University) the street map shows full of them.
+  // Overture footprints fill in, but never on top of an OSM building.
+  const osmHouse = { geometry: square(0, 0, 20, 20) };
+  const extra = [
+    { id: 'same', geometry: square(2, 2, 18, 18) },     // the same house traced by AI
+    { id: 'bigger', geometry: square(-5, -5, 25, 25) }, // a looser outline around it
+    { id: 'new', geometry: square(60, 0, 80, 20) },     // a house OSM does not have
+  ];
+  const kept = dropOverlapping(extra, [osmHouse]).map((e) => e.id);
+  check('Overture buildings fill gaps but never sit on an OSM building', kept.join() === 'new', kept.join());
   const riverbank = { tags: { waterway: 'riverbank' }, geometry: square(40, -60, 60, -40) };
   const rb = new THREE.Box3().setFromObject(generateWater([riverbank], 0, 0, ORIGIN.lat, ORIGIN.lng));
   check('a riverbank outline is filled as an area, not drawn as a river line', near(rb.min.x, 40, 0.5) && near(rb.max.x, 60, 0.5));
@@ -480,6 +492,12 @@ if (process.argv.includes('--online')) {
     const buildings = [...cm.chunks.values()].reduce((n, c) => n + c.osmData.buildings.length, 0);
     check(`${name}: area downloaded and 3x3 chunks built in ${((Date.now() - t0) / 1000).toFixed(1)} s`, loaded && cm.chunks.size === 9, `${cm.chunks.size}/9 chunks, ${roads.length} roads, ${buildings} buildings`);
     check(`${name}: real data, not the synthetic fallback`, [...cm.chunks.values()].every((c) => !c.osmData.synthetic));
+    if (name === 'Bangsaen') {
+      // OSM has no buildings around Burapha University; the Overture footprints must fill them in
+      const middle = [...cm.chunks.values()].find((c) => c.chunkX === 0 && c.chunkZ === 0);
+      const extra = middle.osmData.buildings.filter((b) => String(b.id).startsWith('ov_')).length;
+      check('Bangsaen: buildings OSM is missing come from Overture', extra >= 10, `${extra} of ${middle.osmData.buildings.length} in the start chunk`);
+    }
     if (name === 'Tokyo') {
       const signals = [...cm.chunks.values()].reduce((n, c) => n + (c.osmData.signals?.length || 0), 0);
       check('Tokyo: traffic signal nodes are parsed from OSM', signals > 0, `${signals} signals`);

@@ -17,6 +17,7 @@ export default defineConfig({
           three: ['three'],
           physics: ['cannon-es'],
           map: ['leaflet'],
+          tiles: ['pmtiles', '@mapbox/vector-tile', 'pbf'],
         },
       },
     },

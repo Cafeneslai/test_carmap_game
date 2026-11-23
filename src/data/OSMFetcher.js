@@ -9,6 +9,7 @@
 
 import { OVERPASS_ENDPOINTS, OSM_MAP_API } from '../config.js';
 import { bboxToOverpass, getBoundingBox, latLngToMeters } from './GeoUtils.js';
+import { fetchOvertureBuildings, dropOverlapping } from './OvertureBuildings.js';
 
 const PRELOAD_TIMEOUT_MS = 25000;
 const CHUNK_TIMEOUT_MS = 10000;
@@ -412,10 +413,20 @@ function containsBox(outer, inner) {
  */
 export async function preloadRegion(originLat, originLng, radiusMeters = REGION_RADIUS_M) {
   const bbox = getBoundingBox(originLat, originLng, radiusMeters);
-  const parsed = await fetchOsmBox(bbox, PRELOAD_TIMEOUT_MS);
+  const parsed = await fetchRegionBox(bbox);
   if (!parsed) return false;
   addRegion({ bbox, ...withBounds(parsed) });
   return true;
+}
+
+/** OSM for an area, plus the Overture footprints of buildings OSM is missing (downloaded side by side) */
+async function fetchRegionBox(bbox) {
+  const [parsed, extra] = await Promise.all([
+    fetchOsmBox(bbox, PRELOAD_TIMEOUT_MS),
+    fetchOvertureBuildings(bbox).catch(() => []),
+  ]);
+  if (parsed && extra.length) parsed.buildings.push(...dropOverlapping(extra, parsed.buildings));
+  return parsed;
 }
 
 function addRegion(region) {
@@ -437,7 +448,7 @@ function regionFor(bbox) {
   const lng = (bbox.west + bbox.east) / 2;
   const regionBox = getBoundingBox(lat, lng, REGION_RADIUS_M);
   const entry = { bbox: regionBox, promise: null };
-  entry.promise = fetchOsmBox(regionBox, PRELOAD_TIMEOUT_MS)
+  entry.promise = fetchRegionBox(regionBox)
     .then((parsed) => {
       if (!parsed) return null;
       const region = { bbox: regionBox, ...withBounds(parsed) };

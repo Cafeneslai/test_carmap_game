@@ -10,8 +10,11 @@
     "verify": "node scripts/verify-world.mjs"
   },
   "dependencies": {
+    "@mapbox/vector-tile": "^3.0.0",
     "cannon-es": "^0.20.0",
     "leaflet": "^1.9.4",
+    "pbf": "^5.2.0",
+    "pmtiles": "^4.5.0",
     "three": "^0.170.0"
   },
   "devDependencies": {

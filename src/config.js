@@ -81,6 +81,8 @@ export const OVERPASS_ENDPOINTS = [
 ];
 export const NOMINATIM_API = 'https://nominatim.openstreetmap.org/search';
 export const OSM_MAP_API = 'https://api.openstreetmap.org/api/0.6/map';
+// Open building footprints (OSM + Google + Microsoft) fill the gaps where OSM has no buildings
+export const OVERTURE_CATALOG = 'https://stac.overturemaps.org/catalog.json';
 
 // ====== Map tiles (first = primary, rest = fallbacks used when tiles fail to load) ======
 // CARTO basemaps now return an "API KEY REQUIRED" watermark, so they are not used.

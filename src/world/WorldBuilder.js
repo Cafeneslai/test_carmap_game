@@ -19,7 +19,7 @@ import { paintGround, getGroundDetailTexture } from './GroundPainter.js';
 
 // Bump when the shape or orientation of cached data changes. v3: elevation comes from the shared
 // world lattice (ElevationField), rows run north->south, buildings belong to a single chunk.
-const CACHE_VERSION = 'v6'; // v6: multipolygon relations (big forests, lakes with islands); v5: landcover; v4: signals
+const CACHE_VERSION = 'v7'; // v7: Overture buildings where OSM has none; v6: multipolygon relations (big forests, lakes with islands); v5: landcover; v4: signals
 
 function flatGrid() {
   return Array.from({ length: TERRAIN_RESOLUTION }, () => new Array(TERRAIN_RESOLUTION).fill(0));
