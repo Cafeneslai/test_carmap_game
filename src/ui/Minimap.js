@@ -40,6 +40,26 @@ export class Minimap {
   }
 
   /**
+   * Show the current checkpoint, or hide it with null
+   * @param {{ lat: number, lng: number } | null} pos
+   */
+  setTarget(pos) {
+    if (!this.map) return;
+    if (!pos) {
+      this.targetMarker?.remove();
+      this.targetMarker = null;
+      return;
+    }
+    if (!this.targetMarker) {
+      this.targetMarker = L.circleMarker([pos.lat, pos.lng], {
+        radius: 7, color: '#000', weight: 2, fillColor: '#ffcc00', fillOpacity: 1,
+      }).addTo(this.map);
+    } else {
+      this.targetMarker.setLatLng([pos.lat, pos.lng]);
+    }
+  }
+
+  /**
    * Recalculate container dimensions when HUD is revealed
    */
   invalidateSize() {

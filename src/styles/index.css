@@ -819,3 +819,47 @@ kbd {
     height: 140px;
   }
 }
+
+/* ---- Checkpoint mission ---- */
+.hud-mission {
+  position: absolute;
+  top: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  background: var(--bg-glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 1rem;
+  color: #fff;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.hud-mission.hidden {
+  display: none;
+}
+.mission-arrow {
+  font-size: 1.6rem;
+  color: #ffcc00;
+  transition: transform 0.1s linear;
+}
+.mission-sub {
+  font-size: 0.75rem;
+  font-weight: 400;
+  opacity: 0.75;
+}
+@media (max-width: 600px) {
+  .hud-mission {
+    top: 4rem;
+    font-size: 0.8rem;
+  }
+}
+
+.hud-top-right {
+  display: flex;
+  gap: 0.5rem;
+}

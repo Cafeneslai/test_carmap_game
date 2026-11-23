@@ -9,11 +9,17 @@ export class HUD {
     this.el = document.getElementById('hud');
     this.locationEl = document.getElementById('hud-location');
     this.fpsEl = document.getElementById('hud-fps');
+    this.clockEl = document.getElementById('hud-clock');
     this.speedNumber = document.getElementById('speed-number');
     this.gaugeFill = document.getElementById('gauge-fill');
 
     // Gauge circumference for stroke-dashoffset calculation
     this.gaugeCircumference = 2 * Math.PI * 90; // r=90
+
+    this.missionEl = document.getElementById('hud-mission');
+    this.missionArrow = document.getElementById('mission-arrow');
+    this.missionMain = document.getElementById('mission-main');
+    this.missionSub = document.getElementById('mission-sub');
 
     // Minimap
     this.minimap = new Minimap('minimap');
@@ -35,6 +41,8 @@ export class HUD {
 
   hide() {
     this.el.classList.add('hidden');
+    this.missionEl.classList.add('hidden');
+    this.minimap?.setTarget(null);
   }
 
   /**
@@ -61,6 +69,32 @@ export class HUD {
   }
 
   /**
+   * @param {ReturnType<import('../core/Mission.js').Mission['update']>} info
+   * @param {number} carHeading
+   */
+  updateMission(info, carHeading) {
+    this.missionEl.classList.remove('hidden');
+    if (!info || info.distance === 0) {
+      this.missionArrow.style.visibility = 'hidden';
+      this.missionMain.textContent = info ? `✅ ถึงแล้ว! เช็กพอยต์ที่ ${info.count}` : '🏁 กำลังหาจุดเช็กพอยต์...';
+      return;
+    }
+    // Screen up = straight ahead; a target to the car's left (+angle) turns the arrow counter-clockwise
+    const rel = info.angle - carHeading;
+    this.missionArrow.style.visibility = 'visible';
+    this.missionArrow.style.transform = `rotate(${(-rel * 180) / Math.PI}deg)`;
+    this.missionMain.textContent = `🏁 ${Math.round(info.distance)} ม. · ${formatTime(info.elapsed)}`;
+    const last = info.lastTime === null ? '' : ` · ล่าสุด ${formatTime(info.lastTime)}`;
+    this.missionSub.textContent = `${info.name} · ผ่านแล้ว ${info.count}${last}`;
+  }
+
+  /** @param {string} text "HH:MM" */
+  updateClock(text) {
+    const label = `🕘 ${text}`;
+    if (this.clockEl.textContent !== label) this.clockEl.textContent = label;
+  }
+
+  /**
    * Update FPS counter
    * @param {number} fps
    */
@@ -76,4 +110,9 @@ export class HUD {
       this.minimap.update(lat, lng, heading);
     }
   }
+}
+
+function formatTime(seconds) {
+  const s = Math.floor(seconds);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }

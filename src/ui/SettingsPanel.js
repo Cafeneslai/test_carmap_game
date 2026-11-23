@@ -20,6 +20,7 @@ export class SettingsPanel {
     this.shadowsCheckbox = document.getElementById('setting-shadows');
     this.treesCheckbox = document.getElementById('setting-trees');
     this.soundCheckbox = document.getElementById('setting-sound');
+    this.dayNightCheckbox = document.getElementById('setting-daynight');
     this.resetBtn = document.getElementById('btn-reset-location');
     this.closeBtn = document.getElementById('btn-close-settings');
 
@@ -39,10 +40,11 @@ export class SettingsPanel {
     if (typeof saved.shadows === 'boolean') this.shadowsCheckbox.checked = saved.shadows;
     if (typeof saved.trees === 'boolean') this.treesCheckbox.checked = saved.trees;
     if (typeof saved.sound === 'boolean') this.soundCheckbox.checked = saved.sound;
+    if (typeof saved.dayNight === 'boolean') this.dayNightCheckbox.checked = saved.dayNight;
 
     // Run the normal handlers so the renderer matches the panel (it starts at "high" otherwise)
     this.viewDistanceSlider.dispatchEvent(new Event('input'));
-    for (const el of [this.qualitySelect, this.shadowsCheckbox, this.treesCheckbox, this.soundCheckbox]) {
+    for (const el of [this.qualitySelect, this.shadowsCheckbox, this.treesCheckbox, this.soundCheckbox, this.dayNightCheckbox]) {
       el.dispatchEvent(new Event('change'));
     }
   }
@@ -55,6 +57,7 @@ export class SettingsPanel {
         shadows: this.shadowsCheckbox.checked,
         trees: this.treesCheckbox.checked,
         sound: this.soundCheckbox.checked,
+        dayNight: this.dayNightCheckbox.checked,
       }));
     } catch {
       // private mode / storage full: settings just won't persist
@@ -105,8 +108,13 @@ export class SettingsPanel {
       this.game.engineSound.enabled = this.soundCheckbox.checked;
     });
 
+    // Day/night toggle
+    this.dayNightCheckbox.addEventListener('change', () => {
+      this.game.dayNight.enabled = this.dayNightCheckbox.checked;
+    });
+
     // Persist every change
-    for (const el of [this.viewDistanceSlider, this.qualitySelect, this.shadowsCheckbox, this.treesCheckbox, this.soundCheckbox]) {
+    for (const el of [this.viewDistanceSlider, this.qualitySelect, this.shadowsCheckbox, this.treesCheckbox, this.soundCheckbox, this.dayNightCheckbox]) {
       el.addEventListener('change', () => this._save());
     }
 

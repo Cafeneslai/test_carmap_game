@@ -20,6 +20,8 @@ import { parseOsmXml, findSpawnPoint } from '../src/data/OSMFetcher.js';
 import { ElevationField } from '../src/data/ElevationField.js';
 import { headingToBearingDeg } from '../src/ui/compass.js';
 import { CHUNK_SIZE } from '../src/config.js';
+import { pickCheckpoint } from '../src/core/Mission.js';
+import { lightingAt } from '../src/world/DayNight.js';
 
 let failures = 0;
 function check(name, ok, detail = '') {
@@ -144,6 +146,22 @@ section('Elevation lattice (shared samples, few coordinates, no seams)');
   const first = await flaky.sampleChunk(0, 0, 8).catch(() => null);
   const retry = await flaky.sampleChunk(0, 0, 8);
   check('after a failed fetch the same chunk can be retried successfully', first === null && retry.complete === true);
+}
+
+// ------------------------------------------------------------------------------------------
+section('Checkpoint mission and day/night');
+{
+  const roads = [
+    { tags: { highway: 'residential' }, geometry: [at(0, 0), at(100, 0), at(300, 0), at(900, 0)] },
+    { tags: { highway: 'footway' }, geometry: [at(0, 250), at(0, 300)] },
+  ];
+  const picks = Array.from({ length: 50 }, (_, i) => pickCheckpoint(roads, ORIGIN.lat, ORIGIN.lng, { x: 0, z: 0 }, 150, 450, () => i / 50));
+  check('checkpoints land only on drivable roads inside the 150-450 m band', picks.every((p) => p && near(p.x, 300, 1) && near(p.z, 0, 1)));
+  check('no checkpoint when no road is in range', pickCheckpoint(roads, ORIGIN.lat, ORIGIN.lng, { x: 5000, z: 5000 }) === null);
+
+  const noon = lightingAt(12), midnight = lightingAt(0), dusk = lightingAt(18.2);
+  check('noon is full daylight, midnight is dark', noon.daylight > 0.99 && midnight.daylight === 0, `noon ${noon.daylight.toFixed(2)}, midnight ${midnight.daylight.toFixed(2)}`);
+  check('sky is blue at noon, dark at midnight, orange-ish at dusk', noon.sky.b > noon.sky.r && midnight.sky.getHSL({}).l < 0.15 && dusk.sky.r > dusk.sky.b);
 }
 
 // ------------------------------------------------------------------------------------------

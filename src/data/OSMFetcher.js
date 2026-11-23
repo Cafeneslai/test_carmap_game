@@ -15,7 +15,7 @@ const CHUNK_TIMEOUT_MS = 10000;
 const OVERPASS_TIMEOUT_MS = 8000;
 const MAX_SPLIT_DEPTH = 3;
 /** Roads a car can actually be placed on / driven along */
-const DRIVABLE = new Set([
+export const DRIVABLE = new Set([
   'motorway', 'motorway_link', 'trunk', 'trunk_link', 'primary', 'primary_link',
   'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'residential',
   'unclassified', 'service', 'living_street', 'road',

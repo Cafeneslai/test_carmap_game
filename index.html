@@ -79,7 +79,15 @@
     <div class="hud-top-left">
       <div id="hud-location" class="hud-location">📍 —</div>
     </div>
+    <div id="hud-mission" class="hud-mission hidden">
+      <div id="mission-arrow" class="mission-arrow">▲</div>
+      <div class="mission-text">
+        <div id="mission-main">🏁 กำลังหาจุดเช็กพอยต์...</div>
+        <div id="mission-sub" class="mission-sub"></div>
+      </div>
+    </div>
     <div class="hud-top-right">
+      <div id="hud-clock" class="hud-fps">🕘 --:--</div>
       <div id="hud-fps" class="hud-fps">— FPS</div>
     </div>
     <div class="hud-bottom-left">
@@ -154,6 +162,10 @@
       <div class="setting-row">
         <label for="setting-sound">เสียงเครื่องยนต์</label>
         <input type="checkbox" id="setting-sound" checked />
+      </div>
+      <div class="setting-row">
+        <label for="setting-daynight">กลางวัน-กลางคืน (ปิด = เที่ยงตลอด)</label>
+        <input type="checkbox" id="setting-daynight" checked />
       </div>
       <div class="setting-row actions">
         <button id="btn-reset-location" class="btn-secondary">🔄 เปลี่ยนสถานที่</button>

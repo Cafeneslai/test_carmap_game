@@ -11,6 +11,8 @@ import { CarController } from '../vehicle/CarController.js';
 import { CarModel } from '../vehicle/CarModel.js';
 import { CameraController } from '../vehicle/CameraController.js';
 import { EngineSound } from '../vehicle/EngineSound.js';
+import { Mission } from './Mission.js';
+import { DayNight } from '../world/DayNight.js';
 import { LocationPicker } from '../ui/LocationPicker.js';
 import { LoadingScreen } from '../ui/LoadingScreen.js';
 import { HUD } from '../ui/HUD.js';
@@ -56,6 +58,7 @@ export class Game {
 
     // ---- Lighting ----
     this._setupLighting();
+    this.mission = null;
 
     // ---- Physics ----
     this.physicsWorld = new CANNON.World({
@@ -95,7 +98,7 @@ export class Game {
 
   _setupLighting() {
     // Ambient
-    const ambient = new THREE.AmbientLight(0xffffff, 0.5);
+    const ambient = new THREE.AmbientLight(0xaabbdd, 0.5);
     this.scene.add(ambient);
 
     // Hemisphere
@@ -116,6 +119,8 @@ export class Game {
     this.sunLight.shadow.bias = -0.001;
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
+
+    this.dayNight = new DayNight({ scene: this.scene, sun: this.sunLight, ambient, hemi });
   }
 
   // ---- Public methods called by UI ----
@@ -151,6 +156,14 @@ export class Game {
       this.loadingScreen.setProgress(30);
       this.carModel = new CarModel(this.scene);
       this.carController = new CarController(this.physicsWorld, this.carModel);
+
+      // Headlights: only lit when it gets dark (see _updatePlaying)
+      this.headlight = new THREE.SpotLight(0xfff2cc, 0, 90, 0.55, 0.5, 1);
+      this.headlight.position.set(0, 1, 2);
+      this.headlight.target.position.set(0, 0, 25);
+      this.carModel.group.add(this.headlight, this.headlight.target);
+
+      this.mission = new Mission(this.scene);
 
       // 4. Setup camera
       this.cameraController = new CameraController(this.camera, this.carController);
@@ -207,6 +220,11 @@ export class Game {
       this.carModel = null;
     }
     this.cameraController = null;
+    this.headlight = null; // was a child of the car model, gone with it
+    if (this.mission) {
+      this.mission.dispose();
+      this.mission = null;
+    }
 
     this.hud.hide();
     this.settingsPanel.hide();
@@ -284,9 +302,18 @@ export class Game {
       const pos = this.carController.getPosition();
       this.chunkManager.update(pos);
 
-      // Move sun with car
-      this.sunLight.position.set(pos.x + 100, 150, pos.z + 100);
-      this.sunLight.target.position.set(pos.x, 0, pos.z);
+      // Sun, sky and headlights follow the time of day
+      this.dayNight.update(delta, pos);
+      if (this.headlight) this.headlight.intensity = 40 * (1 - this.dayNight.daylight);
+      this.hud.updateClock(this.dayNight.clock);
+
+      // Checkpoint run
+      if (this.mission) {
+        const info = this.mission.update(delta, pos, this.chunkManager);
+        this.hud.updateMission(info, this.carController.getHeading());
+        const wb = this.chunkManager.worldBuilder;
+        this.hud.minimap?.setTarget(this.mission.target ? metersToLatLng(this.mission.target.x, this.mission.target.z, wb.originLat, wb.originLng) : null);
+      }
 
       // Update Minimap
       const { lat, lng } = metersToLatLng(
