@@ -7,6 +7,19 @@ import { ROAD_WIDTHS, ROAD_Y_OFFSET } from '../config.js';
 import { latLngToMeters } from '../data/GeoUtils.js';
 import { getElevationAt } from './ElevationUtils.js';
 import { DRIVABLE } from '../data/OSMFetcher.js';
+import { CHUNK_SIZE } from '../config.js';
+import { cumulativeLengths, pointAt, extract, insideIntervals, removeAround, dashPolyline } from './Polyline.js';
+
+export { dashPolyline };
+
+const SEAM_OVERLAP = 1.5; // metres a road reaches into the next chunk so there is no visible gap
+
+/** The parts of a polyline more than `clear` metres (along the line) from every stop */
+export function cutPolyline(points, cum, stops, clear) {
+  return removeAround([[0, cum[cum.length - 1]]], stops, clear)
+    .filter(([a, b]) => b - a > 1)
+    .map(([a, b]) => extract(points, cum, a, b));
+}
 
 /**
  * Generate merged road mesh from OSM way elements
@@ -22,6 +35,14 @@ import { DRIVABLE } from '../data/OSMFetcher.js';
 export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, originLat, originLng, baseElevation = null) {
   const geometries = [];
   const junctions = findJunctions(roads);
+  // Each chunk draws only the parts of a road inside it (plus a small overlap to hide the seam).
+  // Drawing whole roads made every chunk repeat them, with heights clamped to its own grid outside it.
+  const half = CHUNK_SIZE / 2;
+  const inChunk = (p) => p.x >= chunkWorldX - half && p.x < chunkWorldX + half && p.y >= chunkWorldZ - half && p.y < chunkWorldZ + half;
+  const rect = {
+    minX: chunkWorldX - half - SEAM_OVERLAP, maxX: chunkWorldX + half + SEAM_OVERLAP,
+    minZ: chunkWorldZ - half - SEAM_OVERLAP, maxZ: chunkWorldZ + half + SEAM_OVERLAP,
+  };
 
   for (const road of roads) {
     if (!road.geometry || road.geometry.length < 2) continue;
@@ -34,11 +55,14 @@ export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, or
       const { x, z } = latLngToMeters(node.lat, node.lon, originLat, originLng);
       return new THREE.Vector2(x, z);
     });
+    const cum = cumulativeLengths(points);
+    const inside = insideIntervals(points, cum, rect);
+    if (inside.length === 0) continue;
 
-    // Generate road strip geometry
-    const roadGeom = createRoadStrip(points, width / 2, elevationData, chunkWorldX, chunkWorldZ, baseElevation);
-    if (roadGeom) {
-      geometries.push(roadGeom);
+    // Road surface
+    for (const [a, b] of inside) {
+      const roadGeom = createRoadStrip(extract(points, cum, a, b), width / 2, elevationData, chunkWorldX, chunkWorldZ, baseElevation);
+      if (roadGeom) geometries.push(roadGeom);
     }
 
     // Painted markings, sidewalks and crosswalks; all of them stop short of junctions
@@ -51,21 +75,21 @@ export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, or
       if (g) geometries.push(paint(g, color));
     };
     const oneway = road.tags?.oneway === 'yes' || highwayType === 'motorway';
-    const cum = cumulativeLengths(points);
     const stops = road.geometry
       .map((n, i) => (junctions.get(nodeKey(n)) >= 3 ? cum[i] : null))
       .filter((s) => s !== null);
-    const pieces = cutPolyline(points, cum, stops, JUNCTION_CLEAR);
 
-    for (const piece of pieces) {
+    for (const [a, b] of removeAround(inside, stops, JUNCTION_CLEAR)) {
+      if (b - a < 1) continue;
+      const piece = extract(points, cum, a, b);
       if (major) {
         // Solid edge lines, and a solid centre line on two-way roads (dashed lane line on one-way)
         mark(piece, 0.12, WHITE, width / 2 - 0.5);
         mark(piece, 0.12, WHITE, -(width / 2 - 0.5));
-        if (oneway) for (const dash of dashPolyline(piece, 3, 6)) mark(dash, 0.1, WHITE);
+        if (oneway) for (const dash of dashPolyline(piece, 3, 6, a)) mark(dash, 0.1, WHITE);
         else mark(piece, 0.15, YELLOW);
       } else if (!oneway) {
-        for (const dash of dashPolyline(piece, 3, 6)) mark(dash, 0.1, WHITE);
+        for (const dash of dashPolyline(piece, 3, 6, a)) mark(dash, 0.1, WHITE);
       }
       if (highwayType !== 'motorway' && highwayType !== 'trunk') {
         mark(piece, SIDEWALK_WIDTH / 2, SIDEWALK, width / 2 + SIDEWALK_WIDTH / 2, 0.02);
@@ -81,6 +105,7 @@ export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, or
         if (at < 1.5 || at > total - 1.5) continue;
         if (stops.some((o) => o !== s && Math.abs(o - at) < JUNCTION_CLEAR)) continue; // too close to another junction
         const { p, dir } = pointAt(points, cum, at);
+        if (!inChunk(p)) continue; // the neighbouring chunk draws this one
         const seg = [p.clone().addScaledVector(dir, -1.5), p.clone().addScaledVector(dir, 1.5)];
         for (let off = -(width / 2 - 0.7); off <= width / 2 - 0.7 + 1e-6; off += 1) mark(seg, 0.25, WHITE, off);
       }
@@ -138,51 +163,6 @@ export function findJunctions(roads) {
   return arms;
 }
 
-function cumulativeLengths(points) {
-  const cum = [0];
-  for (let i = 1; i < points.length; i++) cum.push(cum[i - 1] + points[i].distanceTo(points[i - 1]));
-  return cum;
-}
-
-/** Point and unit direction at a distance along a polyline */
-function pointAt(points, cum, s) {
-  let i = 1;
-  while (i < points.length - 1 && cum[i] < s) i++;
-  const a = points[i - 1], b = points[i];
-  const len = cum[i] - cum[i - 1] || 1;
-  const p = a.clone().lerp(b, (s - cum[i - 1]) / len);
-  return { p, dir: b.clone().sub(a).normalize() };
-}
-
-/**
- * The parts of a polyline more than `clear` metres (along the line) from every stop.
- * @param {number[]} stops distances along the line
- * @returns {THREE.Vector2[][]}
- */
-export function cutPolyline(points, cum, stops, clear) {
-  const total = cum[cum.length - 1];
-  // Kept intervals = [0, total] minus [stop - clear, stop + clear]
-  let keep = [[0, total]];
-  for (const s of stops) {
-    const next = [];
-    for (const [a, b] of keep) {
-      if (s + clear <= a || s - clear >= b) next.push([a, b]);
-      else {
-        if (s - clear > a) next.push([a, s - clear]);
-        if (s + clear < b) next.push([s + clear, b]);
-      }
-    }
-    keep = next;
-  }
-  return keep
-    .filter(([a, b]) => b - a > 1)
-    .map(([a, b]) => {
-      const piece = [pointAt(points, cum, a).p];
-      for (let i = 0; i < points.length; i++) if (cum[i] > a && cum[i] < b) piece.push(points[i].clone());
-      piece.push(pointAt(points, cum, b).p);
-      return piece;
-    });
-}
 const YELLOW = [0.95, 0.75, 0.15];
 
 function paint(geometry, [r, g, b]) {
@@ -192,37 +172,6 @@ function paint(geometry, [r, g, b]) {
   }
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   return geometry;
-}
-
-/**
- * Cut a polyline into dashes.
- * @param {THREE.Vector2[]} points
- * @returns {THREE.Vector2[][]} one short polyline per dash
- */
-export function dashPolyline(points, dash, gap) {
-  const dashes = [];
-  let current = null;
-  let pos = 0; // distance into the current dash+gap period
-  for (let i = 0; i < points.length - 1; i++) {
-    const a = points[i], b = points[i + 1];
-    const len = a.distanceTo(b);
-    let t = 0;
-    while (t < len) {
-      const inDash = pos < dash;
-      const step = Math.min(len - t, inDash ? dash - pos : dash + gap - pos);
-      if (inDash) {
-        const p0 = a.clone().lerp(b, t / len);
-        const p1 = a.clone().lerp(b, (t + step) / len);
-        if (!current) { current = [p0]; dashes.push(current); }
-        current.push(p1);
-      }
-      t += step;
-      pos += step;
-      if (inDash && pos >= dash) current = null; // this dash is finished
-      if (pos >= dash + gap) pos = 0;
-    }
-  }
-  return dashes.filter((d) => d.length >= 2 && d[0].distanceTo(d[d.length - 1]) > 0.5);
 }
 
 /**

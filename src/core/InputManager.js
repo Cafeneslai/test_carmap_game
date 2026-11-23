@@ -37,6 +37,8 @@ export class InputManager {
   }
 
   _onKeyDown(e) {
+    // Typing in the location search (or any form field) is not driving
+    if (e.target instanceof HTMLElement && e.target.closest('input, textarea, select, [contenteditable]')) return;
     const code = e.code.toLowerCase();
     if (!this.keysDown.has(code)) {
       this.keysJustPressed.add(code);

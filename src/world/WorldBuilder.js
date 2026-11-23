@@ -13,10 +13,12 @@ import { generateBuildings } from './BuildingGenerator.js';
 import { generateWater } from './WaterGenerator.js';
 import { placeVegetation } from './VegetationPlacer.js';
 import { generateStreetLamps } from './StreetLamps.js';
+import { generateTrafficLights } from './TrafficLights.js';
+import { isLeftHandTraffic } from '../data/DrivingSide.js';
 
 // Bump when the shape or orientation of cached data changes. v3: elevation comes from the shared
 // world lattice (ElevationField), rows run north->south, buildings belong to a single chunk.
-const CACHE_VERSION = 'v3';
+const CACHE_VERSION = 'v4'; // v4: OSM data also carries traffic signal nodes
 
 function flatGrid() {
   return Array.from({ length: TERRAIN_RESOLUTION }, () => new Array(TERRAIN_RESOLUTION).fill(0));
@@ -33,6 +35,7 @@ export class WorldBuilder {
     this.originBaseElevation = null;
     this.treesEnabled = true;
     this.elevation = new ElevationField(originLat, originLng);
+    this.leftHand = isLeftHandTraffic(originLat, originLng);
   }
 
   async _loadOsm(chunk, bbox) {
@@ -46,7 +49,7 @@ export class WorldBuilder {
       return data;
     } catch (err) {
       console.warn('OSM data failed for chunk', chunk.key, err);
-      return { roads: [], buildings: [], water: [], greenery: [] };
+      return { roads: [], buildings: [], water: [], greenery: [], signals: [] };
     }
   }
 
@@ -116,10 +119,12 @@ export class WorldBuilder {
       const roads = generateRoads(osmData.roads, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base);
       if (roads) chunk.meshGroup.add(roads);
       const lamps = generateStreetLamps(osmData.roads, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base);
-      if (lamps) {
-        chunk.meshGroup.add(lamps);
-        physicsWorld.addBody(lamps.userData.body);
-        chunk.physicsBodies.push(lamps.userData.body);
+      const signals = generateTrafficLights(osmData.signals, osmData.roads, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base, this.leftHand);
+      for (const extra of [lamps, signals]) {
+        if (!extra) continue;
+        chunk.meshGroup.add(extra);
+        physicsWorld.addBody(extra.userData.body);
+        chunk.physicsBodies.push(extra.userData.body);
       }
     }
 

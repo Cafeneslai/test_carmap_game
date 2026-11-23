@@ -24,6 +24,9 @@ import { pickCheckpoint, paceSecondsPerKm } from '../src/core/Mission.js';
 import { dashPolyline, findJunctions, cutPolyline } from '../src/world/RoadGenerator.js';
 import { lampPositions, generateStreetLamps } from '../src/world/StreetLamps.js';
 import { buildingHeight, pitchedRoof } from '../src/world/BuildingGenerator.js';
+import { signalState, signalHeads, CYCLE_SECONDS } from '../src/world/TrafficLights.js';
+import { TrafficManager } from '../src/world/Traffic.js';
+import { isLeftHandTraffic } from '../src/data/DrivingSide.js';
 import { lightingAt } from '../src/world/DayNight.js';
 
 let failures = 0;
@@ -67,6 +70,13 @@ section('Geometry lands where OSM says (north = -Z, east = +X)');
   check('building collider covers the rotated footprint', hits(100, 100) && hits(100 + 14 * c, 100 + 14 * s));
   check('building collider does not spill past its walls', !hits(100 - 10 * s, 100 + 10 * c) && !hits(100 + 18 * c, 100 + 18 * s));
 
+  // L-shaped building (30 x 30 m with the 20 x 20 m north-east corner missing): the empty corner must stay open
+  const lShape = { id: 6, tags: { building: 'yes' }, geometry: [at(200, 200), at(230, 200), at(230, 210), at(210, 210), at(210, 230), at(200, 230), at(200, 200)] };
+  const lWorld = new CANNON.World();
+  lWorld.addBody(generateBuildings([lShape], flat(), 0, 0, ORIGIN.lat, ORIGIN.lng, 0).userData.body);
+  const lHits = (x, z) => { const r = new CANNON.RaycastResult(); lWorld.raycastClosest(new CANNON.Vec3(x, 50, z), new CANNON.Vec3(x, -5, z), {}, r); return r.hasHit; };
+  check('L-shaped building: both wings are solid, the empty inside corner is open', lHits(205, 225) && lHits(225, 205) && lHits(205, 205) && !lHits(222, 222), `corner ${lHits(222, 222) ? 'blocked' : 'open'}`);
+
   const water = { tags: { natural: 'water' }, geometry: square(40, -60, 60, -40) };
   const wbox = new THREE.Box3().setFromObject(generateWater([water], 0, 0, ORIGIN.lat, ORIGIN.lng));
   check('lake 50 m north of origin is at z -60..-40', near(wbox.min.z, -60, 1) && near(wbox.max.z, -40, 1));
@@ -83,6 +93,13 @@ section('Geometry lands where OSM says (north = -Z, east = +X)');
     if (new THREE.Vector3().crossVectors(b.clone().sub(a), c.clone().sub(a)).y > 0) upCount++;
   }
   check('every road triangle faces up (not culled from above)', upCount === tris, `${upCount}/${tris}`);
+
+  // Bug: every chunk drew whole roads, with heights clamped to its own grid outside it (doubled roads on hills)
+  const longRoad = { tags: { highway: 'primary' }, geometry: [at(-700, 30), at(700, 30)] };
+  const rbox = new THREE.Box3().setFromObject(generateRoads([longRoad], flat(), 0, 0, ORIGIN.lat, ORIGIN.lng, 0));
+  check('a 1.4 km road is clipped to its 200 m chunk (+1.5 m seam)', near(rbox.min.x, -101.5, 0.6) && near(rbox.max.x, 101.5, 0.6), `x ${rbox.min.x.toFixed(1)}..${rbox.max.x.toFixed(1)}`);
+  const lakeNext = { tags: { natural: 'water' }, geometry: square(150, -20, 400, 20) }; // centre in the next chunk east
+  check('a lake is drawn only by the chunk holding its centre', generateWater([lakeNext], 0, 0, ORIGIN.lat, ORIGIN.lng) === null && generateWater([lakeNext], CHUNK_SIZE, 0, ORIGIN.lat, ORIGIN.lng) !== null);
 }
 
 // ------------------------------------------------------------------------------------------
@@ -227,6 +244,57 @@ section('Realistic city: markings, lamps, building heights');
 }
 
 // ------------------------------------------------------------------------------------------
+section('Traffic lights and NPC cars');
+{
+  let together = 0;
+  for (let t = 0; t < CYCLE_SECONDS; t += 0.25) if (signalState(0, t) !== 'red' && signalState(1, t) !== 'red') together++;
+  check('crossing streets are never green/yellow at the same time', together === 0);
+  check('each phase gets green, yellow and red', ['green', 'yellow', 'red'].every((s) => [...Array(96).keys()].some((i) => signalState(0, i / 4) === s)));
+
+  check('driving side: Tokyo, Bangkok, London left; Paris, New York right',
+    isLeftHandTraffic(35.66, 139.75) && isLeftHandTraffic(13.75, 100.5) && isLeftHandTraffic(51.5, -0.12) &&
+    !isLeftHandTraffic(48.86, 2.35) && !isLeftHandTraffic(40.71, -74.0));
+
+  // East-west two-way road with a signal in the middle
+  const sigNode = at(0, 0);
+  const road = { id: 'r1', tags: { highway: 'primary' }, geometry: [at(-200, 0), sigNode, at(200, 0)] };
+  const right = signalHeads([sigNode], [road], ORIGIN.lat, ORIGIN.lng, false);
+  const left = signalHeads([sigNode], [road], ORIGIN.lat, ORIGIN.lng, true);
+  // Travelling east (+X), the driver's right is +Z (facing +Z, +X is left)
+  const eastbound = right.find((h) => h.x < 0);
+  check('a two-way road gets a signal head on both approaches', right.length === 2);
+  check('heads stand on the driving side: right-hand traffic +Z for eastbound, left-hand -Z', eastbound.z > 0 && left.find((h) => h.x < 0).z < 0);
+
+  const scene = new THREE.Scene();
+  const world = new CANNON.World();
+  const chunkManager = {
+    worldBuilder: { originLat: ORIGIN.lat, originLng: ORIGIN.lng, leftHand: false },
+    chunks: new Map([['0,0', { osmData: { signals: [sigNode] } }]]),
+    getLoadedRoads: () => [road],
+    getTerrainHeight: () => 0,
+  };
+  const traffic = new TrafficManager(scene, world, chunkManager);
+  const player = { x: 0, y: 0, z: 150 };
+  traffic.update(0.6, player, 0); // builds the graph and spawns one car
+  const car = traffic.cars[0];
+  car.s = 60; car.dirSign = 1; car.speed = car.max; // 140 m west of the light, heading east
+  const run = (seconds, time) => { for (let t = 0; t < seconds; t += 1 / 30) traffic.update(1 / 30, player, time); };
+  traffic.spawnTimer = 1e9;
+  run(15, 15); // east-west phase is red at t = 15
+  const stoppedAt = car.mesh.position.x;
+  check('NPC car stops before a red light', stoppedAt < -6 && stoppedAt > -20 && car.speed < 0.1, `x=${stoppedAt.toFixed(1)}, ${(car.speed * 3.6).toFixed(0)} km/h`);
+  run(6, 1); // green
+  check('NPC car drives on when the light turns green', car.mesh.position.x > 5, `x=${car.mesh.position.x.toFixed(1)}`);
+  check('NPC car keeps to the right-hand lane (+Z when eastbound)', near(car.mesh.position.z, 2.5, 0.3), `z=${car.mesh.position.z.toFixed(2)}`);
+
+  const blocker = { x: car.mesh.position.x + 25, y: 0, z: car.mesh.position.z };
+  for (let t = 0; t < 8; t += 1 / 30) traffic.update(1 / 30, blocker, 1);
+  check('NPC car brakes for the player in front', car.speed < 0.1 && blocker.x - car.mesh.position.x > 7, `gap ${(blocker.x - car.mesh.position.x).toFixed(1)} m`);
+  traffic.dispose();
+  check('traffic cleans up its cars and bodies', traffic.cars.length === 0 && world.bodies.length === 0 && scene.children.length === 0);
+}
+
+// ------------------------------------------------------------------------------------------
 section('Minimap arrow');
 {
   check('facing north (-Z, heading PI) points the arrow up', near(((headingToBearingDeg(Math.PI) % 360) + 360) % 360, 0, 0.01));
@@ -350,6 +418,10 @@ if (process.argv.includes('--online')) {
     const buildings = [...cm.chunks.values()].reduce((n, c) => n + c.osmData.buildings.length, 0);
     check(`${name}: area downloaded and 3x3 chunks built in ${((Date.now() - t0) / 1000).toFixed(1)} s`, loaded && cm.chunks.size === 9, `${cm.chunks.size}/9 chunks, ${roads.length} roads, ${buildings} buildings`);
     check(`${name}: real data, not the synthetic fallback`, [...cm.chunks.values()].every((c) => !c.osmData.synthetic));
+    if (name === 'Tokyo') {
+      const signals = [...cm.chunks.values()].reduce((n, c) => n + (c.osmData.signals?.length || 0), 0);
+      check('Tokyo: traffic signal nodes are parsed from OSM', signals > 0, `${signals} signals`);
+    }
 
     const spawn = findSpawnPoint(roads, lat, lng);
     check(`${name}: found a drivable road near the start`, !!spawn && Math.hypot(spawn.x, spawn.z) < 120, spawn ? `${spawn.name}, ${Math.hypot(spawn.x, spawn.z).toFixed(0)} m away` : 'none');

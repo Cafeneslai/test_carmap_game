@@ -51,6 +51,10 @@ function computeBounds(geometry) {
 /** Sort one way (OSM API) or element (Overpass) into the category the generators expect. */
 function classify(element, out) {
   const tags = element.tags;
+  if (element.type === 'node') {
+    if (tags?.highway === 'traffic_signals') out.signals.push({ id: element.id, lat: element.lat, lon: element.lon });
+    return;
+  }
   const geom = element.geometry;
   if (!tags || !geom) return;
 
@@ -80,7 +84,18 @@ export function parseOsmXml(xml) {
     nodes.set(match[1], { lat: parseFloat(match[2]), lon: parseFloat(match[3]) });
   }
 
-  const out = { roads: [], buildings: [], water: [], greenery: [] };
+  const out = { roads: [], buildings: [], water: [], greenery: [], signals: [] };
+
+  // Traffic lights are tagged nodes: <node id lat lon ...> <tag k="highway" v="traffic_signals"/> </node>
+  // ([^>]*[^/]> skips self-closing <node .../> so a match never runs on into the next node)
+  const taggedNodeRegex = /<node id="(\d+)"([^>]*[^/])>([\s\S]*?)<\/node>/g;
+  while ((match = taggedNodeRegex.exec(xml)) !== null) {
+    if (!/<tag k="highway" v="traffic_signals"\s*\/>/.test(match[3])) continue;
+    const lat = /lat="([^"]+)"/.exec(match[2]);
+    const lon = /lon="([^"]+)"/.exec(match[2]);
+    if (lat && lon) out.signals.push({ id: match[1], lat: parseFloat(lat[1]), lon: parseFloat(lon[1]) });
+  }
+
   const wayRegex = /<way id="(\d+)"[^>]*>([\s\S]*?)<\/way>/g;
   while ((match = wayRegex.exec(xml)) !== null) {
     const body = match[2];
@@ -107,11 +122,11 @@ export function parseOsmXml(xml) {
 }
 
 function merge(parts) {
-  const seen = { roads: new Set(), buildings: new Set(), water: new Set(), greenery: new Set() };
-  const out = { roads: [], buildings: [], water: [], greenery: [] };
+  const seen = { roads: new Set(), buildings: new Set(), water: new Set(), greenery: new Set(), signals: new Set() };
+  const out = { roads: [], buildings: [], water: [], greenery: [], signals: [] };
   for (const part of parts) {
     for (const key of Object.keys(out)) {
-      for (const el of part[key]) {
+      for (const el of part[key] || []) {
         if (seen[key].has(el.id)) continue;
         seen[key].add(el.id);
         out[key].push(el);
@@ -184,7 +199,7 @@ async function fetchOsmBox(bbox, timeoutMs, depth = 0) {
 
 async function fetchOverpassBox(bbox) {
   const b = bboxToOverpass(bbox);
-  const query = `[out:json][timeout:8];(way["highway"](${b});way["building"](${b});way["natural"="water"](${b});way["waterway"](${b});way["landuse"~"forest|grass"](${b});way["leisure"~"park|garden"](${b}););out geom;`;
+  const query = `[out:json][timeout:8];(way["highway"](${b});way["building"](${b});way["natural"="water"](${b});way["waterway"](${b});way["landuse"~"forest|grass"](${b});way["leisure"~"park|garden"](${b});node["highway"="traffic_signals"](${b}););out geom;`;
 
   for (let attempt = 0; attempt < OVERPASS_ENDPOINTS.length; attempt++) {
     const index = (overpassIndex + attempt) % OVERPASS_ENDPOINTS.length;
@@ -202,7 +217,7 @@ async function fetchOverpassBox(bbox) {
 
       const json = await response.json();
       overpassIndex = index;
-      const out = { roads: [], buildings: [], water: [], greenery: [] };
+      const out = { roads: [], buildings: [], water: [], greenery: [], signals: [] };
       for (const el of json.elements || []) classify(el, out);
       return out;
     } catch {
@@ -239,7 +254,8 @@ function selectForChunk(parsed, bbox) {
     const lon = (el.bounds.minLon + el.bounds.maxLon) / 2;
     return lat >= bbox.south && lat < bbox.north && lon >= bbox.west && lon < bbox.east;
   });
-  return { roads, buildings, water, greenery };
+  const signals = (parsed.signals || []).filter((n) => n.lat >= bbox.south && n.lat < bbox.north && n.lon >= bbox.west && n.lon < bbox.east);
+  return { roads, buildings, water, greenery, signals };
 }
 
 function containsBox(outer, inner) {
@@ -399,5 +415,5 @@ function generateProceduralFallback(bbox) {
     });
   });
 
-  return withBounds({ roads, buildings, water: [], greenery: [] });
+  return withBounds({ roads, buildings, water: [], greenery: [], signals: [] });
 }

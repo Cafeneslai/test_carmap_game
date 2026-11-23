@@ -14,6 +14,8 @@ import { EngineSound } from '../vehicle/EngineSound.js';
 import { Mission } from './Mission.js';
 import { DayNight } from '../world/DayNight.js';
 import { setNightLevel } from '../world/NightLights.js';
+import { updateTrafficLights } from '../world/TrafficLights.js';
+import { TrafficManager } from '../world/Traffic.js';
 import { LocationPicker } from '../ui/LocationPicker.js';
 import { LoadingScreen } from '../ui/LoadingScreen.js';
 import { HUD } from '../ui/HUD.js';
@@ -60,6 +62,9 @@ export class Game {
     // ---- Lighting ----
     this._setupLighting();
     this.mission = null;
+    this.traffic = null;
+    this.trafficEnabled = true;
+    this.gameTime = 0; // seconds of driving, drives the traffic light cycle
 
     // ---- Physics ----
     this.physicsWorld = new CANNON.World({
@@ -164,6 +169,8 @@ export class Game {
       this.headlight.target.position.set(0, 0, 25);
       this.carModel.group.add(this.headlight, this.headlight.target);
 
+      this.traffic = new TrafficManager(this.scene, this.physicsWorld, this.chunkManager);
+      this.traffic.enabled = this.trafficEnabled;
       this.mission = new Mission(this.scene, `${location.lat.toFixed(3)},${location.lng.toFixed(3)}`);
 
       // 4. Setup camera
@@ -225,6 +232,10 @@ export class Game {
     if (this.mission) {
       this.mission.dispose();
       this.mission = null;
+    }
+    if (this.traffic) {
+      this.traffic.dispose();
+      this.traffic = null;
     }
 
     this.hud.hide();
@@ -307,6 +318,11 @@ export class Game {
       this.dayNight.update(delta, pos);
       if (this.headlight) this.headlight.intensity = 40 * (1 - this.dayNight.daylight);
       setNightLevel(1 - this.dayNight.daylight); // windows, street lamps
+
+      // Traffic lights and NPC cars share one clock so cars obey what the lights show
+      this.gameTime += delta;
+      updateTrafficLights(this.gameTime);
+      this.traffic?.update(delta, pos, this.gameTime);
       this.hud.updateClock(this.dayNight.clock);
 
       // Checkpoint run

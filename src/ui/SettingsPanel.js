@@ -21,6 +21,7 @@ export class SettingsPanel {
     this.treesCheckbox = document.getElementById('setting-trees');
     this.soundCheckbox = document.getElementById('setting-sound');
     this.dayNightCheckbox = document.getElementById('setting-daynight');
+    this.trafficCheckbox = document.getElementById('setting-traffic');
     this.resetBtn = document.getElementById('btn-reset-location');
     this.closeBtn = document.getElementById('btn-close-settings');
 
@@ -41,10 +42,11 @@ export class SettingsPanel {
     if (typeof saved.trees === 'boolean') this.treesCheckbox.checked = saved.trees;
     if (typeof saved.sound === 'boolean') this.soundCheckbox.checked = saved.sound;
     if (typeof saved.dayNight === 'boolean') this.dayNightCheckbox.checked = saved.dayNight;
+    if (typeof saved.traffic === 'boolean') this.trafficCheckbox.checked = saved.traffic;
 
     // Run the normal handlers so the renderer matches the panel (it starts at "high" otherwise)
     this.viewDistanceSlider.dispatchEvent(new Event('input'));
-    for (const el of [this.qualitySelect, this.shadowsCheckbox, this.treesCheckbox, this.soundCheckbox, this.dayNightCheckbox]) {
+    for (const el of [this.qualitySelect, this.shadowsCheckbox, this.treesCheckbox, this.soundCheckbox, this.dayNightCheckbox, this.trafficCheckbox]) {
       el.dispatchEvent(new Event('change'));
     }
   }
@@ -58,6 +60,7 @@ export class SettingsPanel {
         trees: this.treesCheckbox.checked,
         sound: this.soundCheckbox.checked,
         dayNight: this.dayNightCheckbox.checked,
+        traffic: this.trafficCheckbox.checked,
       }));
     } catch {
       // private mode / storage full: settings just won't persist
@@ -113,8 +116,14 @@ export class SettingsPanel {
       this.game.dayNight.enabled = this.dayNightCheckbox.checked;
     });
 
+    // NPC traffic toggle (also applies to the next location)
+    this.trafficCheckbox.addEventListener('change', () => {
+      this.game.trafficEnabled = this.trafficCheckbox.checked;
+      if (this.game.traffic) this.game.traffic.enabled = this.trafficCheckbox.checked;
+    });
+
     // Persist every change
-    for (const el of [this.viewDistanceSlider, this.qualitySelect, this.shadowsCheckbox, this.treesCheckbox, this.soundCheckbox, this.dayNightCheckbox]) {
+    for (const el of [this.viewDistanceSlider, this.qualitySelect, this.shadowsCheckbox, this.treesCheckbox, this.soundCheckbox, this.dayNightCheckbox, this.trafficCheckbox]) {
       el.addEventListener('change', () => this._save());
     }
 

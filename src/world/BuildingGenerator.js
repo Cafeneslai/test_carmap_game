@@ -176,19 +176,65 @@ export function buildingHeight(building) {
   return (2 + ((id * 7919) % 4)) * METERS_PER_FLOOR || DEFAULT_BUILDING_HEIGHT;
 }
 
+const COLLIDER_CELL = 2; // metres; strips this wide follow the outline of L/U/odd-shaped buildings
+
 /**
- * Box aligned with the footprint's longest wall. Exact for rectangles, a close fit for most other shapes.
- * shortcut: L/U-shaped buildings get one box over their whole footprint; use convex decomposition if that blocks real roads.
+ * Collision boxes for a footprint, aligned with its longest wall.
+ * A near-rectangle gets one box. Other shapes (L, U, courtyards) are cut into 2 m strips across the
+ * long axis; each run of strip cells inside the footprint becomes one box, so a courtyard or the
+ * inside corner of an L stays open instead of being one big box over a road or yard.
  * @param {THREE.Vector2[]} points footprint in world x / z
  */
 function addCollisionBox(body, points, bottomY, height) {
   const r = orientedRect(points);
   if (!r || r.halfU < 0.25 || r.halfV < 0.25) return;
-  const center = new CANNON.Vec3(r.cx, bottomY + height / 2, r.cz);
-  // Rotating local +X about +Y by a gives (cos a, 0, -sin a); we want (ux, 0, uz)
   const q = new CANNON.Quaternion();
+  // Rotating local +X about +Y by a gives (cos a, 0, -sin a); we want (ux, 0, uz)
   q.setFromEuler(0, Math.atan2(-r.uz, r.ux), 0);
-  body.addShape(new CANNON.Box(new CANNON.Vec3(r.halfU, height / 2, r.halfV)), center, q);
+  const y = bottomY + height / 2;
+  const vx = -r.uz, vz = r.ux;
+  const add = (cu, cv, hu, hv) => body.addShape(
+    new CANNON.Box(new CANNON.Vec3(hu, height / 2, hv)),
+    new CANNON.Vec3(r.cx + r.ux * cu + vx * cv, y, r.cz + r.uz * cu + vz * cv),
+    q,
+  );
+
+  if (Math.abs(polygonArea(points)) >= 0.9 * 4 * r.halfU * r.halfV) {
+    add(0, 0, r.halfU, r.halfV);
+    return;
+  }
+
+  // Footprint in (u, v) around the rectangle centre, for point-in-polygon tests
+  const local = points.map((p) => {
+    const dx = p.x - r.cx, dz = p.y - r.cz;
+    return { u: dx * r.ux + dz * r.uz, v: dx * vx + dz * vz };
+  });
+  // Capped so a huge irregular building (a stadium, a mall) stays at most ~40 strips
+  const nu = Math.min(40, Math.max(1, Math.round((2 * r.halfU) / COLLIDER_CELL)));
+  const nv = Math.min(40, Math.max(1, Math.round((2 * r.halfV) / COLLIDER_CELL)));
+  const du = (2 * r.halfU) / nu, dv = (2 * r.halfV) / nv;
+  for (let i = 0; i < nu; i++) {
+    const u = -r.halfU + (i + 0.5) * du;
+    let runStart = -1;
+    for (let j = 0; j <= nv; j++) {
+      const inside = j < nv && insideLocal(local, u, -r.halfV + (j + 0.5) * dv);
+      if (inside && runStart < 0) runStart = j;
+      if (!inside && runStart >= 0) {
+        const v0 = -r.halfV + runStart * dv, v1 = -r.halfV + j * dv;
+        add(u, (v0 + v1) / 2, du / 2, (v1 - v0) / 2);
+        runStart = -1;
+      }
+    }
+  }
+}
+
+function insideLocal(poly, u, v) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i], b = poly[j];
+    if ((a.v > v) !== (b.v > v) && u < ((b.u - a.u) * (v - a.v)) / (b.v - a.v) + a.u) inside = !inside;
+  }
+  return inside;
 }
 
 /**

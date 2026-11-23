@@ -5,6 +5,8 @@
 import * as THREE from 'three';
 import { latLngToMeters } from '../data/GeoUtils.js';
 import { getElevationAt } from './ElevationUtils.js';
+import { CHUNK_SIZE } from '../config.js';
+import { cumulativeLengths, extract, insideIntervals } from './Polyline.js';
 
 const WATER_Y_OFFSET = 0.05;
 
@@ -33,22 +35,31 @@ export function generateWater(waterElements, chunkWorldX, chunkWorldZ, originLat
       return new THREE.Vector2(x, z);
     });
 
-    // Water level: terrain height at the middle of the feature
+    const heightAt = (x, z) => (elevationData
+      ? getElevationAt(x - chunkWorldX, z - chunkWorldZ, elevationData, baseElevation)
+      : 0) + WATER_Y_OFFSET;
+    const half = CHUNK_SIZE / 2;
+
+    // Rivers/streams: only the part inside this chunk, following the terrain (rivers flow downhill)
+    if (isWaterway) {
+      const width = getWaterwayWidth(element.tags.waterway);
+      const rect = { minX: chunkWorldX - half - 1, maxX: chunkWorldX + half + 1, minZ: chunkWorldZ - half - 1, maxZ: chunkWorldZ + half + 1 };
+      const cum = cumulativeLengths(points);
+      for (const [a, b] of insideIntervals(points, cum, rect)) {
+        const strip = createWaterStrip(extract(points, cum, a, b), width / 2, heightAt);
+        if (strip) geometries.push(strip);
+      }
+      continue;
+    }
+
+    // Lakes are flat, so exactly one chunk draws each lake: the one holding its centre.
+    // Before, every chunk the lake touched drew it at its own (clamped) height, so copies z-fought.
     let cx = 0, cz = 0;
     for (const p of points) { cx += p.x; cz += p.y; }
     cx /= points.length;
     cz /= points.length;
-    const waterY = (elevationData
-      ? getElevationAt(cx - chunkWorldX, cz - chunkWorldZ, elevationData, baseElevation)
-      : 0) + WATER_Y_OFFSET;
-
-    // For waterways (rivers/streams), create a strip
-    if (isWaterway) {
-      const width = getWaterwayWidth(element.tags.waterway);
-      const strip = createWaterStrip(points, width / 2, waterY);
-      if (strip) geometries.push(strip);
-      continue;
-    }
+    if (cx < chunkWorldX - half || cx >= chunkWorldX + half || cz < chunkWorldZ - half || cz >= chunkWorldZ + half) continue;
+    const waterY = heightAt(cx, cz);
 
     // For water bodies (lakes, ponds), create a filled polygon
     if (points.length >= 3) {
@@ -107,7 +118,7 @@ function getWaterwayWidth(type) {
   }
 }
 
-function createWaterStrip(points, halfWidth, waterY) {
+function createWaterStrip(points, halfWidth, heightAt) {
   if (points.length < 2) return null;
 
   const vertices = [];
@@ -127,9 +138,10 @@ function createWaterStrip(points, halfWidth, waterY) {
 
     const normal = new THREE.Vector2(-dir.y, dir.x);
 
+    const y = heightAt(points[i].x, points[i].y); // same height on both banks, no tilted water
     vertices.push(
-      points[i].x + normal.x * halfWidth, waterY, points[i].y + normal.y * halfWidth,
-      points[i].x - normal.x * halfWidth, waterY, points[i].y - normal.y * halfWidth
+      points[i].x + normal.x * halfWidth, y, points[i].y + normal.y * halfWidth,
+      points[i].x - normal.x * halfWidth, y, points[i].y - normal.y * halfWidth
     );
 
     if (i > 0) {

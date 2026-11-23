@@ -113,6 +113,14 @@ export class Mission {
     const dz = this.target.z - carPos.z;
     const distance = Math.hypot(dx, dz);
 
+    // The car was reset or put back far away: the old target is no longer a fair run, pick a new one
+    if (distance > MAX_DIST * 3) {
+      this.target = null;
+      this.marker.visible = false;
+      this.retryIn = 0;
+      return null;
+    }
+
     if (distance < REACH_DIST) {
       this.count++;
       this.lastTime = this.elapsed;
