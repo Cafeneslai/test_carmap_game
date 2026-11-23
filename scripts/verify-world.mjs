@@ -46,6 +46,22 @@ section('Geometry lands where OSM says (north = -Z, east = +X)');
   check('building 50 m north of origin is at z -60..-40', near(box.min.z, -60, 1) && near(box.max.z, -40, 1), `z ${box.min.z.toFixed(1)}..${box.max.z.toFixed(1)}`);
   check('building 50 m east of origin is at x 40..60', near(box.min.x, 40, 1) && near(box.max.x, 60, 1));
 
+  // Bug: buildings had no collider, so the car drove straight through them.
+  // A 30x10 m block rotated 30 degrees: the box must cover its centre and stay off a point 10 m beside it.
+  const c = Math.cos(Math.PI / 6), s = Math.sin(Math.PI / 6);
+  const rot = (u, w) => at(100 + u * c - w * s, 100 + u * s + w * c);
+  const tilted = { id: 2, tags: { building: 'yes' }, geometry: [rot(-15, -5), rot(15, -5), rot(15, 5), rot(-15, 5), rot(-15, -5)] };
+  const body = generateBuildings([tilted], flat(), 0, 0, ORIGIN.lat, ORIGIN.lng, 0).userData.body;
+  const world = new CANNON.World();
+  world.addBody(body);
+  const hits = (x, z) => {
+    const r = new CANNON.RaycastResult();
+    world.raycastClosest(new CANNON.Vec3(x, 50, z), new CANNON.Vec3(x, -5, z), {}, r);
+    return r.hasHit;
+  };
+  check('building collider covers the rotated footprint', hits(100, 100) && hits(100 + 14 * c, 100 + 14 * s));
+  check('building collider does not spill past its walls', !hits(100 - 10 * s, 100 + 10 * c) && !hits(100 + 18 * c, 100 + 18 * s));
+
   const water = { tags: { natural: 'water' }, geometry: square(40, -60, 60, -40) };
   const wbox = new THREE.Box3().setFromObject(generateWater([water], 0, 0, ORIGIN.lat, ORIGIN.lng));
   check('lake 50 m north of origin is at z -60..-40', near(wbox.min.z, -60, 1) && near(wbox.max.z, -40, 1));

@@ -105,6 +105,22 @@
         </div>
       </div>
     </div>
+    <div class="touch-controls" aria-label="ปุ่มควบคุมแบบสัมผัส">
+      <div class="touch-group">
+        <button class="touch-btn" data-key="keya" aria-label="เลี้ยวซ้าย">◀</button>
+        <button class="touch-btn" data-key="keyd" aria-label="เลี้ยวขวา">▶</button>
+      </div>
+      <div class="touch-group">
+        <button class="touch-btn small" data-key="keyr" aria-label="รีเซ็ตรถ">R</button>
+        <button class="touch-btn small" data-key="keyc" aria-label="เปลี่ยนมุมกล้อง">📷</button>
+        <button class="touch-btn small" data-key="escape" aria-label="ตั้งค่า">⚙</button>
+      </div>
+      <div class="touch-group">
+        <button class="touch-btn" data-key="space" aria-label="เบรคมือ">⏸</button>
+        <button class="touch-btn" data-key="keys" aria-label="เบรกและถอย">▼</button>
+        <button class="touch-btn" data-key="keyw" aria-label="เร่ง">▲</button>
+      </div>
+    </div>
     <div class="hud-minimap-container">
       <div id="minimap" class="minimap"></div>
     </div>
@@ -134,6 +150,10 @@
       <div class="setting-row">
         <label>ต้นไม้</label>
         <input type="checkbox" id="setting-trees" checked />
+      </div>
+      <div class="setting-row">
+        <label for="setting-sound">เสียงเครื่องยนต์</label>
+        <input type="checkbox" id="setting-sound" checked />
       </div>
       <div class="setting-row actions">
         <button id="btn-reset-location" class="btn-secondary">🔄 เปลี่ยนสถานที่</button>

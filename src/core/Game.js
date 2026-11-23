@@ -10,6 +10,7 @@ import { ChunkManager } from '../world/ChunkManager.js';
 import { CarController } from '../vehicle/CarController.js';
 import { CarModel } from '../vehicle/CarModel.js';
 import { CameraController } from '../vehicle/CameraController.js';
+import { EngineSound } from '../vehicle/EngineSound.js';
 import { LocationPicker } from '../ui/LocationPicker.js';
 import { LoadingScreen } from '../ui/LoadingScreen.js';
 import { HUD } from '../ui/HUD.js';
@@ -66,6 +67,8 @@ export class Game {
 
     // ---- Modules ----
     this.input = new InputManager();
+    this.input.bindTouchButtons(document);
+    this.engineSound = new EngineSound();
     this.chunkManager = null;  // initialized after location selected
     this.carController = null;
     this.carModel = null;
@@ -124,6 +127,7 @@ export class Game {
   async startGame(location) {
     this.selectedLocation = location;
     this.state = GAME_STATES.LOADING;
+    this.engineSound.start(); // still inside the Start click, so the browser allows audio
 
     // Show loading screen
     this.loadingScreen.show();
@@ -179,7 +183,11 @@ export class Game {
 
     } catch (err) {
       console.error('Failed to start game:', err);
-      this.loadingScreen.setText('เกิดข้อผิดพลาด: ' + err.message);
+      this.loadingScreen.setText('เกิดข้อผิดพลาด: ' + err.message + ' — กำลังกลับไปหน้าเลือกสถานที่...');
+      // Without this the player is stuck on the loading screen with no way out
+      await new Promise(r => setTimeout(r, 3000));
+      this.loadingScreen.hide();
+      this.resetToLocationSelect();
     }
   }
 
@@ -211,6 +219,7 @@ export class Game {
   _loop() {
     requestAnimationFrame(() => this._loop());
 
+    this.input.pollGamepad();
     const delta = this.clock.getDelta();
     const elapsed = this.clock.getElapsedTime();
 
@@ -243,6 +252,12 @@ export class Game {
         this.state = GAME_STATES.PLAYING;
       }
     }
+
+    this.engineSound.update(
+      this.carController?.speed ?? 0,
+      this.input.forward || this.input.backward,
+      this.state === GAME_STATES.PLAYING && !!this.carController
+    );
 
     this.input.update();
     this.renderer.render(this.scene, this.camera);

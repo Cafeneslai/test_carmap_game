@@ -1,6 +1,8 @@
 /**
- * SettingsPanel.js — In-game settings overlay
+ * SettingsPanel.js — In-game settings overlay. Values are kept in localStorage between visits.
  */
+
+const STORAGE_KEY = 'carmap.settings';
 
 export class SettingsPanel {
   /**
@@ -17,10 +19,46 @@ export class SettingsPanel {
     this.qualitySelect = document.getElementById('setting-quality');
     this.shadowsCheckbox = document.getElementById('setting-shadows');
     this.treesCheckbox = document.getElementById('setting-trees');
+    this.soundCheckbox = document.getElementById('setting-sound');
     this.resetBtn = document.getElementById('btn-reset-location');
     this.closeBtn = document.getElementById('btn-close-settings');
 
     this._bindEvents();
+    this._restore();
+  }
+
+  _restore() {
+    let saved = {};
+    try {
+      saved = JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
+    } catch {
+      // corrupt or blocked storage: keep the defaults
+    }
+    if (saved.viewDistance) this.viewDistanceSlider.value = saved.viewDistance;
+    if (saved.quality) this.qualitySelect.value = saved.quality;
+    if (typeof saved.shadows === 'boolean') this.shadowsCheckbox.checked = saved.shadows;
+    if (typeof saved.trees === 'boolean') this.treesCheckbox.checked = saved.trees;
+    if (typeof saved.sound === 'boolean') this.soundCheckbox.checked = saved.sound;
+
+    // Run the normal handlers so the renderer matches the panel (it starts at "high" otherwise)
+    this.viewDistanceSlider.dispatchEvent(new Event('input'));
+    for (const el of [this.qualitySelect, this.shadowsCheckbox, this.treesCheckbox, this.soundCheckbox]) {
+      el.dispatchEvent(new Event('change'));
+    }
+  }
+
+  _save() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        viewDistance: parseInt(this.viewDistanceSlider.value),
+        quality: this.qualitySelect.value,
+        shadows: this.shadowsCheckbox.checked,
+        trees: this.treesCheckbox.checked,
+        sound: this.soundCheckbox.checked,
+      }));
+    } catch {
+      // private mode / storage full: settings just won't persist
+    }
   }
 
   _bindEvents() {
@@ -61,6 +99,16 @@ export class SettingsPanel {
           break;
       }
     });
+
+    // Engine sound toggle
+    this.soundCheckbox.addEventListener('change', () => {
+      this.game.engineSound.enabled = this.soundCheckbox.checked;
+    });
+
+    // Persist every change
+    for (const el of [this.viewDistanceSlider, this.qualitySelect, this.shadowsCheckbox, this.treesCheckbox, this.soundCheckbox]) {
+      el.addEventListener('change', () => this._save());
+    }
 
     // Reset location
     this.resetBtn.addEventListener('click', () => {

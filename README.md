@@ -22,6 +22,10 @@
 - 🚗 **Raycast Vehicle Physics:** ระบบฟิสิกส์รถยนต์ที่สมจริง รองรับระบบโช้ค การเบรก แรงเสียดทาน และเบรคมือ (Cannon-es)
 - 🌍 **Interactive Map Picker:** เลื่อนแผนที่จิ้มปักหมุดจุดเริ่มต้นได้ทั่วโลกด้วย Leaflet.js
 - ⚡ **Chunk Streaming System:** โหลดเฉพาะส่วนที่ผู้เล่นมองเห็น (Chunk) ช่วยลดการใช้ RAM และเพิ่ม FPS
+- 🧱 **ชนตึกได้จริง:** ตึกทุกหลังมีกล่องชน (collider) หมุนตามแนวผนัง รถขับทะลุตึกไม่ได้แล้ว
+- 🔊 **เสียงเครื่องยนต์:** สังเคราะห์ด้วย Web Audio (ไม่ใช้ไฟล์เสียง) รอบเครื่องขึ้นลงตามความเร็วและเกียร์ 5 สปีด
+- 🎮 **จอยเกมและจอสัมผัส:** รองรับ Gamepad (Xbox/PS) และมีปุ่มบนจอให้อัตโนมัติเมื่อเล่นบนมือถือ/แท็บเล็ต
+- 💾 **จำค่าตั้งค่า:** ระยะมองเห็น คุณภาพกราฟิก เงา ต้นไม้ และเสียง ถูกบันทึกไว้ในเบราว์เซอร์
 
 ---
 
@@ -72,16 +76,44 @@
 | `R` | รีเซ็ตตำแหน่งรถ (ในกรณีที่พลิกคว่ำหรือติดหล่ม) |
 | `ESC` | เปิดหน้าต่างตั้งค่ากราฟิก (Settings) |
 
+**จอยเกม (Gamepad):** เสียบแล้วกดปุ่มใดก็ได้หนึ่งครั้งเพื่อให้เบราว์เซอร์รู้จัก
+
+| ปุ่มจอย | การกระทำ |
+|:---:|:---|
+| `RT` / `A` / D-pad ขึ้น | เร่ง |
+| `LT` / `B` / D-pad ลง | เบรก / ถอย |
+| สติ๊กซ้าย / D-pad ซ้าย-ขวา | เลี้ยว |
+| `X` | เบรคมือ |
+| `Y` | รีเซ็ตรถ |
+| `Back` / `View` | เปลี่ยนมุมกล้อง |
+| `Start` / `Menu` | ตั้งค่า |
+
+**มือถือ/แท็บเล็ต:** ปุ่ม ◀ ▶ (เลี้ยว) อยู่ซ้ายล่าง, ▲ ▼ ⏸ (เร่ง เบรก เบรคมือ) อยู่ขวาล่าง, R 📷 ⚙ อยู่ตรงกลาง
+
 ---
 
 ## 🏗️ สถาปัตยกรรม (Architecture)
 
 1. **OSM Fetcher & Elevation Fetcher:** 
-   ดึงข้อมูลจุดพิกัดผ่าน `Overpass API` และความสูงจาก `Open Topo Data` แบบ Asynchronous
+   ดึงข้อมูลรอบจุดเริ่มต้นรัศมี 600 ม. จาก `OSM API` ครั้งเดียว (สำรองด้วย `Overpass API`) และความสูงจาก `Open Topo Data` แบบ Asynchronous
 2. **Chunk Manager:** 
    ทำงานร่วมกับ `WorldBuilder` เพื่อ Generate วัตถุแบบ Grid 200x200m และทยอยโหลด/ลบทิ้ง (Dispose) เพื่อจัดการ Memory
 3. **Vehicle & Camera Controller:** 
-   แปลง Input เป็นค่าแรงทางฟิสิกส์ให้ `Cannon-es` และสั่งกล้องให้ติดตามรถแบบ Interpolation อย่างนุ่มนวล
+   แปลง Input (คีย์บอร์ด จอย หรือปุ่มสัมผัส ซึ่ง `InputManager` แปลงเป็นปุ่มเดียวกันหมด) เป็นค่าแรงทางฟิสิกส์ให้ `Cannon-es` และสั่งกล้องให้ติดตามรถแบบ Interpolation อย่างนุ่มนวล
+4. **Physics World:** 
+   พื้นเป็น `Heightfield` ต่อ chunk และตึกทั้ง chunk รวมเป็น static body เดียวที่มีกล่องหลายอัน ถูกลบออกพร้อม chunk
+
+### โครงสร้างไฟล์
+```
+src/
+  core/      Game (ลูปหลัก), InputManager (คีย์บอร์ด/จอย/สัมผัส)
+  data/      OSMFetcher, ElevationFetcher, ElevationField, CacheManager (IndexedDB), GeoUtils
+  world/     ChunkManager, Chunk, WorldBuilder, Terrain/Road/Building/Water generators, VegetationPlacer
+  vehicle/   CarController (ฟิสิกส์), CarModel, CameraController, EngineSound
+  ui/        LocationPicker, LoadingScreen, HUD, Minimap, SettingsPanel
+scripts/
+  verify-world.mjs   ชุดตรวจสอบอัตโนมัติ (npm run verify)
+```
 
 ---
 
@@ -91,6 +123,16 @@
 - `CHUNK_SIZE`: ขนาดของแต่ละพื้นที่ (Default: 200 เมตร)
 - `VIEW_DISTANCE`: ระยะสายตา (Default: 3 Chunks = รัศมี 600 เมตร)
 - `CAR_MAX_FORCE`: แรงบิดของเครื่องยนต์
+
+---
+
+## 🗺️ แผนพัฒนาต่อ (Roadmap)
+
+- [ ] ระบบกลางวัน/กลางคืน (ขยับดวงอาทิตย์และสีท้องฟ้าตามเวลา)
+- [ ] โหมดภารกิจ: checkpoint หรือจับเวลาไปยังจุดสุ่มบนถนนจริง
+- [ ] collider ที่ตรงรูปตึกรูปตัว L/U (ตอนนี้ใช้กล่องเดียวครอบทั้งหลัง)
+- [ ] จำกัดอัตรายิง OSM API เมื่อขับออกนอกรัศมีที่โหลดล่วงหน้าเร็ว ๆ
+- [ ] แยก bundle (three.js ใหญ่กว่า 500 kB หลัง minify)
 
 ---
 

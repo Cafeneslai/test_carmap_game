@@ -119,7 +119,14 @@ export class WorldBuilder {
     // 3. Buildings
     if (osmData.buildings.length > 0) {
       const buildings = generateBuildings(osmData.buildings, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base);
-      if (buildings) chunk.meshGroup.add(buildings);
+      if (buildings) {
+        chunk.meshGroup.add(buildings);
+        const body = buildings.userData.body;
+        if (body) {
+          physicsWorld.addBody(body);
+          chunk.physicsBodies.push(body);
+        }
+      }
     }
 
     // 4. Water

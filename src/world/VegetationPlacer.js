@@ -116,6 +116,7 @@ export function placeVegetation(greeneryElements, elevationData, chunkWorldX, ch
     treePositions.length
   );
   trunkInstanced.castShadow = true;
+  trunkInstanced.userData.shared = true; // geometry/material are reused by every chunk
 
   // Foliage instanced mesh
   const foliageInstanced = new THREE.InstancedMesh(
@@ -124,6 +125,7 @@ export function placeVegetation(greeneryElements, elevationData, chunkWorldX, ch
     treePositions.length
   );
   foliageInstanced.castShadow = true;
+  foliageInstanced.userData.shared = true;
 
   const matrix = new THREE.Matrix4();
 

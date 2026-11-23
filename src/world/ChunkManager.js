@@ -43,6 +43,7 @@ export class ChunkManager {
 
     this.lastPlayerChunkX = null;
     this.lastPlayerChunkZ = null;
+    this.disposed = false;
   }
 
   /**
@@ -213,6 +214,11 @@ export class ChunkManager {
 
     try {
       await this.worldBuilder.buildChunk(chunk, this.scene, this.physicsWorld);
+      // The player left for another location while this chunk was downloading
+      if (this.disposed) {
+        chunk.dispose(this.scene, this.physicsWorld);
+        return;
+      }
       chunk.state = CHUNK_STATES.READY;
       this.scene.add(chunk.meshGroup);
       this.chunks.set(key, chunk);
@@ -220,7 +226,7 @@ export class ChunkManager {
       console.warn(`Failed to load chunk ${key}:`, err);
     } finally {
       this.loadingChunks.delete(key);
-      this._pumpLoadQueue();
+      if (!this.disposed) this._pumpLoadQueue();
     }
   }
 
@@ -236,6 +242,7 @@ export class ChunkManager {
    * Dispose everything
    */
   dispose() {
+    this.disposed = true;
     for (const [key, chunk] of this.chunks) {
       chunk.dispose(this.scene, this.physicsWorld);
     }

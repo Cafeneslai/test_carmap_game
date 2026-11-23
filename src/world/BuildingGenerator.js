@@ -3,6 +3,7 @@
  */
 
 import * as THREE from 'three';
+import * as CANNON from 'cannon-es';
 import { DEFAULT_BUILDING_HEIGHT, METERS_PER_FLOOR, BUILDING_COLORS } from '../config.js';
 import { latLngToMeters } from '../data/GeoUtils.js';
 import { getElevationAt } from './ElevationUtils.js';
@@ -22,6 +23,8 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
   const group = new THREE.Group();
   const geometries = [];
   const colorArrays = [];
+  // One static body per chunk, one box per building, so the car cannot drive through walls
+  const body = new CANNON.Body({ mass: 0 });
 
   for (const building of buildings) {
     if (!building.geometry || building.geometry.length < 3) continue;
@@ -85,6 +88,7 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
       
       // Translate to terrain height (sink it slightly to avoid gaps)
       geometry.translate(0, baseY - 0.5, 0);
+      addCollisionBox(body, shapePoints, baseY - 0.5, height);
 
       // Pick a color for this building
       // Deterministic per building so a building drawn by two chunks never flickers
@@ -138,6 +142,7 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
   mesh.receiveShadow = true;
 
   group.add(mesh);
+  if (body.shapes.length > 0) group.userData.body = body;
 
   // Dispose individual geometries
   for (const geom of geometries) {
@@ -145,6 +150,39 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
   }
 
   return group;
+}
+
+/**
+ * Box aligned with the footprint's longest wall. Exact for rectangles, a close fit for most other shapes.
+ * shortcut: L/U-shaped buildings get one box over their whole footprint; use convex decomposition if that blocks real roads.
+ * @param {THREE.Vector2[]} points footprint in world x / z
+ */
+function addCollisionBox(body, points, bottomY, height) {
+  let bestLen = 0, ux = 1, uz = 0;
+  for (let i = 0; i < points.length - 1; i++) {
+    const dx = points[i + 1].x - points[i].x;
+    const dz = points[i + 1].y - points[i].y;
+    const len = Math.hypot(dx, dz);
+    if (len > bestLen) { bestLen = len; ux = dx / len; uz = dz / len; }
+  }
+  if (bestLen < 0.5) return;
+
+  let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+  for (const p of points) {
+    const u = p.x * ux + p.y * uz;
+    const v = -p.x * uz + p.y * ux;
+    minU = Math.min(minU, u); maxU = Math.max(maxU, u);
+    minV = Math.min(minV, v); maxV = Math.max(maxV, v);
+  }
+  const halfU = (maxU - minU) / 2, halfV = (maxV - minV) / 2;
+  if (halfU < 0.25 || halfV < 0.25) return;
+
+  const cu = (minU + maxU) / 2, cv = (minV + maxV) / 2;
+  const center = new CANNON.Vec3(cu * ux - cv * uz, bottomY + height / 2, cu * uz + cv * ux);
+  // Rotating local +X about +Y by a gives (cos a, 0, -sin a); we want (ux, 0, uz)
+  const q = new CANNON.Quaternion();
+  q.setFromEuler(0, Math.atan2(-uz, ux), 0);
+  body.addShape(new CANNON.Box(new CANNON.Vec3(halfU, height / 2, halfV)), center, q);
 }
 
 /**

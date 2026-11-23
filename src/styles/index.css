@@ -762,3 +762,60 @@ kbd {
   border-right: 4px solid transparent;
   border-bottom: 6px solid var(--accent-primary, #00d4ff);
 }
+
+/* ---- Touch controls (only on touch screens) ---- */
+.touch-controls {
+  display: none;
+}
+
+@media (pointer: coarse) {
+  .touch-controls {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    padding: 0 16px;
+    pointer-events: none;
+  }
+  .touch-group {
+    display: flex;
+    gap: 12px;
+    pointer-events: auto;
+  }
+  .touch-btn {
+    width: 72px;
+    height: 72px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.35);
+    background: rgba(0, 0, 0, 0.45);
+    color: #fff;
+    font-size: 26px;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .touch-btn.small {
+    width: 48px;
+    height: 48px;
+    font-size: 18px;
+  }
+  .touch-btn:active {
+    background: rgba(255, 255, 255, 0.3);
+  }
+  /* The keyboard hint and speedometer would sit under the buttons */
+  .controls-hint {
+    display: none;
+  }
+  .hud-bottom-right {
+    bottom: 110px;
+  }
+  .hud-minimap-container {
+    top: 70px;
+    bottom: auto;
+    width: 140px;
+    height: 140px;
+  }
+}
