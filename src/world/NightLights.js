@@ -15,7 +15,7 @@ const BULB_OFF = new THREE.Color(0x777766);
 const BULB_ON = new THREE.Color(0xffe9a8);
 
 export const lampBulbMaterial = new THREE.MeshBasicMaterial({ color: BULB_OFF.clone() });
-export const lampPoleMaterial = new THREE.MeshStandardMaterial({ color: 0x55585c, roughness: 0.6, metalness: 0.5 });
+export const lampPoleMaterial = new THREE.MeshStandardMaterial({ color: 0x8a8e93, roughness: 0.7, metalness: 0.1 }); // no env map: metal would render black
 export const lampGlowMaterial = new THREE.MeshBasicMaterial({
   color: 0xffd27a,
   map: hasDom ? radialTexture() : null,
@@ -71,9 +71,12 @@ export function getWindowTextures() {
   const lit = [1, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0];
   for (let row = 0; row < 4; row++) {
     for (let col = 0; col < 4; col++) {
-      const x = col * cell + cell * 0.25, y = row * cell + cell * 0.22;
-      const ww = cell * 0.5, wh = cell * 0.5;
-      w.fillStyle = '#6f8499';
+      // 1.2 x 1.3 m windows on a 3 m grid, light sky-reflecting glass with a thin frame
+      const x = col * cell + cell * 0.3, y = row * cell + cell * 0.25;
+      const ww = cell * 0.4, wh = cell * 0.43;
+      w.fillStyle = '#5d6670';
+      w.fillRect(x - 2, y - 2, ww + 4, wh + 4);
+      w.fillStyle = '#a9bccd';
       w.fillRect(x, y, ww, wh);
       w.fillStyle = '#8a8f96';
       w.fillRect(x, y + wh, ww, 3); // sill

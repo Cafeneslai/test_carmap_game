@@ -75,6 +75,7 @@ export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, or
       if (g) geometries.push(paint(g, color));
     };
     const oneway = road.tags?.oneway === 'yes' || highwayType === 'motorway';
+    const walks = sidewalkSides(road.tags || {});
     const stops = road.geometry
       .map((n, i) => (junctions.get(nodeKey(n)) >= 3 ? cum[i] : null))
       .filter((s) => s !== null);
@@ -91,14 +92,13 @@ export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, or
       } else if (!oneway) {
         for (const dash of dashPolyline(piece, 3, 6, a)) mark(dash, 0.1, WHITE);
       }
-      if (highwayType !== 'motorway' && highwayType !== 'trunk') {
-        mark(piece, SIDEWALK_WIDTH / 2, SIDEWALK, width / 2 + SIDEWALK_WIDTH / 2, 0.02);
-        mark(piece, SIDEWALK_WIDTH / 2, SIDEWALK, -(width / 2 + SIDEWALK_WIDTH / 2), 0.02);
-      }
+      // Positive offset is the right-hand side of the way's direction
+      if (walks.right) mark(piece, SIDEWALK_WIDTH / 2, SIDEWALK, width / 2 + SIDEWALK_WIDTH / 2, 0.02);
+      if (walks.left) mark(piece, SIDEWALK_WIDTH / 2, SIDEWALK, -(width / 2 + SIDEWALK_WIDTH / 2), 0.02);
     }
 
-    // Zebra crossing on every arm of a junction, just past where the sidewalks end
-    if (highwayType === 'motorway' || highwayType === 'trunk') continue;
+    // Zebra crossing on every arm of a junction, just past where the sidewalks end (only where there are sidewalks)
+    if (!walks.left && !walks.right) continue;
     const total = cum[cum.length - 1];
     for (const s of stops) {
       for (const at of [s - JUNCTION_CLEAR + 1.5, s + JUNCTION_CLEAR - 1.5]) {
@@ -142,6 +142,29 @@ const WHITE = [0.92, 0.92, 0.9];
 const SIDEWALK = [0.6, 0.6, 0.58];
 const SIDEWALK_WIDTH = 2;
 const JUNCTION_CLEAR = 9; // metres either side of a junction kept free of lines and sidewalks
+
+const SIDEWALK_BY_DEFAULT = new Set(['primary', 'secondary', 'tertiary']);
+
+/**
+ * Which sides of a way get a sidewalk. OSM `sidewalk` tags win (left/right are relative to the way's
+ * direction; "separate" means it is mapped as its own footway, so none is drawn here). Untagged
+ * town streets (primary/secondary/tertiary) get both sides; residential lanes and highways get none,
+ * so village streets and roads through fields are not lined with pavement.
+ * @returns {{ left: boolean, right: boolean }}
+ */
+export function sidewalkSides(tags) {
+  const both = tags['sidewalk:both'];
+  const v = both ?? tags.sidewalk;
+  const yes = (x) => x === 'yes' || x === 'both';
+  if (v !== undefined || tags['sidewalk:left'] !== undefined || tags['sidewalk:right'] !== undefined) {
+    return {
+      left: v === 'left' || yes(v) || yes(tags['sidewalk:left']),
+      right: v === 'right' || yes(v) || yes(tags['sidewalk:right']),
+    };
+  }
+  const on = SIDEWALK_BY_DEFAULT.has(tags.highway);
+  return { left: on, right: on };
+}
 
 const nodeKey = (n) => `${n.lat.toFixed(7)},${n.lon.toFixed(7)}`;
 

@@ -104,7 +104,7 @@ export class Game {
 
   _setupLighting() {
     // Ambient
-    const ambient = new THREE.AmbientLight(0xaabbdd, 0.5);
+    const ambient = new THREE.AmbientLight(0xffffff, 0.5); // neutral, or every shaded wall turns blue
     this.scene.add(ambient);
 
     // Hemisphere

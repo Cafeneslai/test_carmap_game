@@ -46,7 +46,7 @@ const lampMaterials = [0, 1].map(() => ({
   yellow: new THREE.MeshBasicMaterial({ color: OFF }),
   green: new THREE.MeshBasicMaterial({ color: OFF }),
 }));
-const poleMaterial = new THREE.MeshStandardMaterial({ color: 0x3c3f44, roughness: 0.6, metalness: 0.5 });
+const poleMaterial = new THREE.MeshStandardMaterial({ color: 0x6b6f75, roughness: 0.7, metalness: 0.1 }); // no env map: metal would render black
 const housingMaterial = new THREE.MeshStandardMaterial({ color: 0x1b1d20, roughness: 0.7 });
 const poleGeometry = new THREE.CylinderGeometry(0.09, 0.11, POLE_HEIGHT, 6).translate(0, POLE_HEIGHT / 2, 0);
 const housingGeometry = new THREE.BoxGeometry(0.45, 1.25, 0.3).translate(0, POLE_HEIGHT - 0.3, 0);

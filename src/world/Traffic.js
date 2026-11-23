@@ -30,8 +30,9 @@ const bodyGeometry = new THREE.BoxGeometry(1.8, 0.7, 4.2).translate(0, 0.6, 0);
 const cabinGeometry = new THREE.BoxGeometry(1.6, 0.6, 2.1).translate(0, 1.25, -0.2);
 const wheelGeometry = new THREE.CylinderGeometry(0.33, 0.33, 0.25, 10).rotateZ(Math.PI / 2);
 const lampGeometry = new THREE.BoxGeometry(0.35, 0.15, 0.05);
-const bodyMaterials = CAR_COLORS.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.4, metalness: 0.4 }));
-const glassMaterial = new THREE.MeshStandardMaterial({ color: 0x223040, roughness: 0.1, metalness: 0.6 });
+const bodyMaterials = CAR_COLORS.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.45, metalness: 0.1 }));
+// Low metalness: there is no environment map, so metallic paint and glass would render near-black
+const glassMaterial = new THREE.MeshStandardMaterial({ color: 0x3b4f63, roughness: 0.2, metalness: 0.1 });
 const wheelMaterial = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9 });
 const headMaterial = new THREE.MeshBasicMaterial({ color: 0xfff4d0 });
 const tailMaterial = new THREE.MeshBasicMaterial({ color: 0xaa1010 });

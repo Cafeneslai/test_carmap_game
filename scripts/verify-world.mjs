@@ -21,7 +21,7 @@ import { ElevationField } from '../src/data/ElevationField.js';
 import { headingToBearingDeg } from '../src/ui/compass.js';
 import { CHUNK_SIZE } from '../src/config.js';
 import { pickCheckpoint, paceSecondsPerKm } from '../src/core/Mission.js';
-import { dashPolyline, findJunctions, cutPolyline } from '../src/world/RoadGenerator.js';
+import { dashPolyline, findJunctions, cutPolyline, sidewalkSides } from '../src/world/RoadGenerator.js';
 import { lampPositions, generateStreetLamps } from '../src/world/StreetLamps.js';
 import { buildingHeight, pitchedRoof } from '../src/world/BuildingGenerator.js';
 import { signalState, signalHeads, CYCLE_SECONDS } from '../src/world/TrafficLights.js';
@@ -224,6 +224,11 @@ section('Realistic city: markings, lamps, building heights');
   check('junction finder: crossing has 4 arms, continuing way 2, dead end 1', j.get(key(at(0, 0))) === 4 && j.get(key(at(50, 0))) === 2 && j.get(key(at(-50, 0))) === 1);
   const pts = [new THREE.Vector2(-50, 0), new THREE.Vector2(0, 0), new THREE.Vector2(50, 0)];
   const pieces = cutPolyline(pts, [0, 50, 100], [50], 9);
+  // Bug: every residential lane, even through fields, was lined with pavement on both sides
+  const sw = (tags) => { const s = sidewalkSides(tags); return `${s.left ? 'L' : '-'}${s.right ? 'R' : '-'}`; };
+  check('sidewalks follow OSM tags, else only on town streets',
+    sw({ highway: 'residential' }) === '--' && sw({ highway: 'secondary' }) === 'LR' && sw({ highway: 'residential', sidewalk: 'right' }) === '-R' &&
+    sw({ highway: 'primary', sidewalk: 'separate' }) === '--' && sw({ highway: 'service', 'sidewalk:left': 'yes' }) === 'L-');
   check('lines and sidewalks stop 9 m before and after a junction', pieces.length === 2 && near(pieces[0].at(-1).x, -9, 0.01) && near(pieces[1][0].x, 9, 0.01));
 
   // Gable roof on a 10 x 6 m house: ridge along the long side, every face points outwards/up

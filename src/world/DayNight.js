@@ -63,8 +63,10 @@ export class DayNight {
     this.scene.fog.color.copy(l.sky);
 
     // Sun rises in the east (+X) and sets in the west; below the horizon it only lights the moonlit fill
+    // The sun's path is tilted (it never stands straight overhead): at noon it is ~55° up in the south,
+    // so walls still catch direct light. Straight overhead left every wall in flat blue shade.
     const h = Math.max(l.elevation, 0.05);
-    this.sun.position.set(center.x + Math.cos(l.azimuth) * 150, h * 150 + 10, center.z + 60);
+    this.sun.position.set(center.x + Math.cos(l.azimuth) * 150, 30 + h * 110, center.z + 100);
     this.sun.target.position.set(center.x, 0, center.z);
     this.sun.color.copy(l.sunColor);
     this.sun.intensity = 1.2 * l.daylight;
