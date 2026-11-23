@@ -5,6 +5,7 @@
 import { PRESET_LOCATIONS, NOMINATIM_API } from '../config.js';
 import * as L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import { addBaseLayer } from './tiles.js';
 
 export class LocationPicker {
   /**
@@ -57,11 +58,7 @@ export class LocationPicker {
     // Default to Thailand center
     this.map = L.map('interactive-map').setView([13.7563, 100.5018], 5);
 
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-      subdomains: 'abcd',
-      maxZoom: 19
-    }).addTo(this.map);
+    addBaseLayer(this.map, 'dark');
 
     // Fix for Leaflet marker icon path issues in Vite
     delete L.Icon.Default.prototype._getIconUrl;

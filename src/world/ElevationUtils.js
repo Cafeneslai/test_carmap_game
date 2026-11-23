@@ -11,14 +11,16 @@ import { CHUNK_SIZE, TERRAIN_RESOLUTION, TERRAIN_Y_SCALE } from '../config.js';
  * @param {number[][]} elevationGrid - The chunk's elevation data grid
  * @returns {number} The interpolated Y elevation
  */
-export function getElevationAt(localX, localZ, elevationGrid) {
+export function getElevationAt(localX, localZ, elevationGrid, baseElevation = null) {
   if (!elevationGrid || elevationGrid.length === 0) return 0;
-  const res = TERRAIN_RESOLUTION;
+  const res = elevationGrid.length;
   
-  // Calculate base elevation (center of chunk) to match TerrainGenerator.js
-  const centerRow = Math.floor(res / 2);
-  const centerCol = Math.floor(res / 2);
-  const baseElevation = elevationGrid[centerRow]?.[centerCol] ?? 0;
+  // Use passed baseElevation, or compute center of chunk as fallback
+  if (baseElevation === null) {
+    const centerRow = Math.floor(res / 2);
+    const centerCol = Math.floor(res / 2);
+    baseElevation = elevationGrid[centerRow]?.[centerCol] ?? 0;
+  }
 
   // Map x, z to grid float indices
   const colF = (localX + CHUNK_SIZE / 2) / CHUNK_SIZE * (res - 1);

@@ -18,7 +18,7 @@ import { getElevationAt } from './ElevationUtils.js';
  * @param {number} originLng
  * @returns {THREE.Mesh | null}
  */
-export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, originLat, originLng) {
+export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, originLat, originLng, baseElevation = null) {
   const geometries = [];
 
   for (const road of roads) {
@@ -34,14 +34,14 @@ export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, or
     });
 
     // Generate road strip geometry
-    const roadGeom = createRoadStrip(points, width / 2, elevationData, chunkWorldX, chunkWorldZ);
+    const roadGeom = createRoadStrip(points, width / 2, elevationData, chunkWorldX, chunkWorldZ, baseElevation);
     if (roadGeom) {
       geometries.push(roadGeom);
     }
 
     // Generate center line for major roads
     if (['motorway', 'trunk', 'primary', 'secondary', 'tertiary'].includes(highwayType)) {
-      const lineGeom = createRoadStrip(points, 0.15, elevationData, chunkWorldX, chunkWorldZ);
+      const lineGeom = createRoadStrip(points, 0.15, elevationData, chunkWorldX, chunkWorldZ, baseElevation, 0.04);
       if (lineGeom) {
         // We'll handle marking color via vertex colors
         const colors = new Float32Array(lineGeom.attributes.position.count * 3);
@@ -62,11 +62,16 @@ export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, or
   const mergedGeometry = mergeBufferGeometries(geometries);
   if (!mergedGeometry) return null;
 
+  const hasVertexColors = !!mergedGeometry.attributes.color;
   const material = new THREE.MeshStandardMaterial({
-    color: 0x333338,
+    color: hasVertexColors ? 0xffffff : 0x333338,
     roughness: 0.85,
     metalness: 0.05,
-    vertexColors: mergedGeometry.attributes.color ? true : false,
+    vertexColors: hasVertexColors,
+    // Roads sit a few centimetres above a coarser terrain mesh; bias depth so they never z-fight
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
   });
 
   const mesh = new THREE.Mesh(mergedGeometry, material);
@@ -85,7 +90,7 @@ export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, or
  * @param {number} chunkWorldZ
  * @returns {THREE.BufferGeometry | null}
  */
-function createRoadStrip(points, halfWidth, elevationData, chunkWorldX, chunkWorldZ) {
+function createRoadStrip(points, halfWidth, elevationData, chunkWorldX, chunkWorldZ, baseElevation = null, yLift = 0) {
   if (points.length < 2) return null;
 
   const vertices = [];
@@ -122,8 +127,8 @@ function createRoadStrip(points, halfWidth, elevationData, chunkWorldX, chunkWor
     );
 
     // Add vertices (y = terrain elevation + offset)
-    const yLeft = getElevationAt(left.x - chunkWorldX, left.y - chunkWorldZ, elevationData) + ROAD_Y_OFFSET;
-    const yRight = getElevationAt(right.x - chunkWorldX, right.y - chunkWorldZ, elevationData) + ROAD_Y_OFFSET;
+    const yLeft = getElevationAt(left.x - chunkWorldX, left.y - chunkWorldZ, elevationData, baseElevation) + ROAD_Y_OFFSET + yLift;
+    const yRight = getElevationAt(right.x - chunkWorldX, right.y - chunkWorldZ, elevationData, baseElevation) + ROAD_Y_OFFSET + yLift;
     
     vertices.push(left.x, yLeft, left.y);
     vertices.push(right.x, yRight, right.y);
@@ -139,8 +144,9 @@ function createRoadStrip(points, halfWidth, elevationData, chunkWorldX, chunkWor
     // Triangles (connect to previous pair)
     if (i > 0) {
       const idx = (i - 1) * 2;
-      indices.push(idx, idx + 1, idx + 2);
-      indices.push(idx + 1, idx + 3, idx + 2);
+      // Counter-clockwise seen from above (+Y) so the road faces up and is not culled
+      indices.push(idx, idx + 2, idx + 1);
+      indices.push(idx + 1, idx + 2, idx + 3);
     }
   }
 

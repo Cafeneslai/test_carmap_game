@@ -2,8 +2,6 @@
  * SettingsPanel.js — In-game settings overlay
  */
 
-import { VIEW_DISTANCE } from '../config.js';
-
 export class SettingsPanel {
   /**
    * @param {import('../core/Game.js').Game} game
@@ -31,10 +29,12 @@ export class SettingsPanel {
       const val = parseInt(this.viewDistanceSlider.value);
       this.viewDistanceVal.textContent = val;
 
-      if (this.game.chunkManager) {
-        // Dynamically update view distance (would need config to be mutable)
-        // For now just display value
-      }
+      this.game.chunkManager?.setViewDistance(val);
+    });
+
+    // Trees toggle
+    this.treesCheckbox.addEventListener('change', () => {
+      this.game.chunkManager?.setTreesEnabled(this.treesCheckbox.checked);
     });
 
     // Shadows toggle
@@ -72,6 +72,12 @@ export class SettingsPanel {
       this.hide();
       this.game.state = 'PLAYING';
     });
+  }
+
+  /** Push the current panel values into a freshly created ChunkManager */
+  applyTo(chunkManager) {
+    chunkManager.setViewDistance(parseInt(this.viewDistanceSlider.value));
+    chunkManager.setTreesEnabled(this.treesCheckbox.checked);
   }
 
   show() {
