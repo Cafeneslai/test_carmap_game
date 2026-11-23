@@ -14,8 +14,11 @@ import { ROAD_WIDTHS } from '../config.js';
 import { latLngToMeters } from '../data/GeoUtils.js';
 import { signalKey, signalPhase, signalState } from './TrafficLights.js';
 import { bridgeLiftAt } from './RoadGenerator.js';
+import { buildVehicle, pickKind, KERB_SHIFT } from './Vehicles.js';
+import { isSoutheastAsia } from '../data/DrivingSide.js';
 
 const MAX_CARS = 12;
+const MAX_CARS_THAI = 18; // motorbikes are small: Thai streets carry more vehicles
 const SPAWN_MIN = 60, SPAWN_MAX = 300; // metres from the player
 const DESPAWN = 420;
 const SAFE_GAP = 9;      // metres kept to the car / player in front
@@ -29,39 +32,6 @@ const ROAD_SPEED_KMH = {
   motorway_link: 50, trunk_link: 40, primary_link: 35, secondary_link: 35, tertiary_link: 30,
   residential: 30, unclassified: 30, living_street: 15, road: 30,
 };
-
-const CAR_COLORS = [0xd8d8d8, 0x1d1f24, 0x8a1c1c, 0x1f4f8a, 0x9aa0a6, 0xe8e2d0, 0x2f5f3a];
-const bodyGeometry = new THREE.BoxGeometry(1.8, 0.7, 4.2).translate(0, 0.6, 0);
-const cabinGeometry = new THREE.BoxGeometry(1.6, 0.6, 2.1).translate(0, 1.25, -0.2);
-const wheelGeometry = new THREE.CylinderGeometry(0.33, 0.33, 0.25, 10).rotateZ(Math.PI / 2);
-const lampGeometry = new THREE.BoxGeometry(0.35, 0.15, 0.05);
-const bodyMaterials = CAR_COLORS.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.45, metalness: 0.1 }));
-// Low metalness: there is no environment map, so metallic paint and glass would render near-black
-const glassMaterial = new THREE.MeshStandardMaterial({ color: 0x3b4f63, roughness: 0.2, metalness: 0.1 });
-const wheelMaterial = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9 });
-const headMaterial = new THREE.MeshBasicMaterial({ color: 0xfff4d0 });
-const tailMaterial = new THREE.MeshBasicMaterial({ color: 0xaa1010 });
-
-function buildCarMesh(colorIndex) {
-  const g = new THREE.Group();
-  const body = new THREE.Mesh(bodyGeometry, bodyMaterials[colorIndex % bodyMaterials.length]);
-  const cabin = new THREE.Mesh(cabinGeometry, glassMaterial);
-  body.castShadow = cabin.castShadow = true;
-  g.add(body, cabin);
-  for (const [x, z] of [[-0.85, 1.3], [0.85, 1.3], [-0.85, -1.3], [0.85, -1.3]]) {
-    const w = new THREE.Mesh(wheelGeometry, wheelMaterial);
-    w.position.set(x, 0.33, z);
-    g.add(w);
-  }
-  for (const x of [-0.6, 0.6]) {
-    const head = new THREE.Mesh(lampGeometry, headMaterial);
-    head.position.set(x, 0.7, 2.11);
-    const tail = new THREE.Mesh(lampGeometry, tailMaterial);
-    tail.position.set(x, 0.75, -2.11);
-    g.add(head, tail);
-  }
-  return g;
-}
 
 /** Road way prepared for driving: points in metres, lengths, signal positions */
 function prepare(road, originLat, originLng, signalKeys) {
@@ -121,6 +91,9 @@ export class TrafficManager {
     this.physicsWorld = physicsWorld;
     this.chunkManager = chunkManager;
     this.leftHand = chunkManager.worldBuilder.leftHand;
+    const wb = chunkManager.worldBuilder;
+    this.thai = isSoutheastAsia(wb.originLat, wb.originLng); // Thai street mix: pickups, motorbikes, tuk-tuks
+    this.maxCars = this.thai ? MAX_CARS_THAI : MAX_CARS;
     this.cars = [];
     this.enabled = true;
     this.spawnTimer = 0;
@@ -173,14 +146,16 @@ export class TrafficManager {
       const oneway = way.road.tags.oneway === 'yes';
       const dirSign = oneway || Math.random() < 0.5 ? 1 : -1;
 
-      const mesh = buildCarMesh(Math.floor(Math.random() * CAR_COLORS.length));
+      const vehicle = buildVehicle(pickKind(this.thai));
+      const mesh = vehicle.mesh;
       this.scene.add(mesh);
       const body = new CANNON.Body({ mass: 0, type: CANNON.Body.KINEMATIC });
-      body.addShape(new CANNON.Box(new CANNON.Vec3(0.9, 0.55, 2.1)), new CANNON.Vec3(0, 0.75, 0));
+      const [hx, hy, hz] = vehicle.half;
+      body.addShape(new CANNON.Box(new CANNON.Vec3(hx, hy, hz)), new CANNON.Vec3(0, hy + 0.2, 0));
       this.physicsWorld.addBody(body);
-      const max = (ROAD_SPEED_KMH[way.road.tags.highway] / 3.6) * (0.85 + Math.random() * 0.25);
+      const max = (ROAD_SPEED_KMH[way.road.tags.highway] / 3.6) * vehicle.speed * (0.85 + Math.random() * 0.25);
       const lane = Math.floor(Math.random() * lanesPerDirection(way.road));
-      this.cars.push({ way, s, dirSign, lane, laneTimer: 0, next: null, speed: max * 0.5, max, mesh, body, y: null, pos: null, yaw: null });
+      this.cars.push({ kind: vehicle.kind, speedFactor: vehicle.speed, way, s, dirSign, lane, laneTimer: 0, next: null, speed: max * 0.5, max, mesh, body, y: null, pos: null, yaw: null });
       return;
     }
   }
@@ -300,7 +275,7 @@ export class TrafficManager {
       this._refreshGraph();
     }
     this.spawnTimer -= dt;
-    if (this.spawnTimer <= 0 && this.cars.length < MAX_CARS) {
+    if (this.spawnTimer <= 0 && this.cars.length < this.maxCars) {
       this.spawnTimer = 0.5;
       this._spawn(playerPos);
     }
@@ -315,7 +290,7 @@ export class TrafficManager {
         const over = car.s < 0 ? -car.s : car.s - car.way.length;
         const next = car.next ?? this._pickNext(car);
         if (!next) { this._remove(car); continue; }
-        if (next.way !== car.way) car.max = (ROAD_SPEED_KMH[next.way.road.tags.highway] / 3.6) * (0.85 + Math.random() * 0.25);
+        if (next.way !== car.way) car.max = (ROAD_SPEED_KMH[next.way.road.tags.highway] / 3.6) * (car.speedFactor ?? 1) * (0.85 + Math.random() * 0.25);
         Object.assign(car, { way: next.way, dirSign: next.dirSign, lane: next.lane, next: null });
         car.s = Math.min(car.way.length, Math.max(0, next.s + over * car.dirSign));
       }
@@ -323,7 +298,7 @@ export class TrafficManager {
       const { p, dir } = sample(car.way, car.s);
       const fx = dir.x * car.dirSign, fz = dir.y * car.dirSign;
       // Keep to the lane: right of the centre line (left in left-hand-traffic countries)
-      const lane = laneOffset(car.way.road, car.lane);
+      const lane = Math.min(laneOffset(car.way.road, car.lane) + (KERB_SHIFT[car.kind] ?? 0), (ROAD_WIDTHS[car.way.road.tags.highway] ?? 5) / 2 - 0.4);
       const sx = this.leftHand ? fz : -fz, sz = this.leftHand ? -fx : fx;
       const tx = p.x + sx * lane, tz = p.y + sz * lane;
       // The drawn car moves with the road and eases toward its lane, so a jump of the target

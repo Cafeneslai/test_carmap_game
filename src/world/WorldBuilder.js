@@ -22,7 +22,7 @@ import { generatePowerLines, hasOverheadWires } from './PowerLines.js';
 
 // Bump when the shape or orientation of cached data changes. v3: elevation comes from the shared
 // world lattice (ElevationField), rows run north->south, buildings belong to a single chunk.
-const CACHE_VERSION = 'v10'; // v10: towers (man_made); v9: buildings with courtyards (multipolygon); v8: OSM street trees (natural=tree, tree_row); v7: Overture buildings where OSM has none; v6: multipolygon relations (big forests, lakes with islands); v5: landcover; v4: signals
+const CACHE_VERSION = 'v11'; // v11: shop/restaurant names (pois); v10: towers (man_made); v9: buildings with courtyards (multipolygon); v8: OSM street trees (natural=tree, tree_row); v7: Overture buildings where OSM has none; v6: multipolygon relations (big forests, lakes with islands); v5: landcover; v4: signals
 
 function flatGrid() {
   return Array.from({ length: TERRAIN_RESOLUTION }, () => new Array(TERRAIN_RESOLUTION).fill(0));
@@ -145,7 +145,7 @@ export class WorldBuilder {
 
     // 3. Buildings
     if (osmData.buildings.length > 0) {
-      const buildings = generateBuildings(dropTowerParts(osmData.buildings, osmData.towers, originLat, originLng), elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base, osmData.landcover, osmData.roads);
+      const buildings = generateBuildings(dropTowerParts(osmData.buildings, osmData.towers, originLat, originLng), elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base, osmData.landcover, osmData.roads, osmData.pois);
       if (buildings) {
         chunk.meshGroup.add(buildings);
         const body = buildings.userData.body;

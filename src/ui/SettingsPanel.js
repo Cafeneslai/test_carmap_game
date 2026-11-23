@@ -99,6 +99,7 @@ export class SettingsPanel {
     // Quality select
     this.qualitySelect.addEventListener('change', () => {
       const quality = this.qualitySelect.value;
+      this.game.postFX.enabled = quality !== 'low'; // ambient occlusion costs a few ms per frame
       switch (quality) {
         case 'low':
           this.game.renderer.setPixelRatio(1);

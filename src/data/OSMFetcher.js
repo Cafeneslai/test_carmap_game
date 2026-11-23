@@ -16,6 +16,15 @@ const CHUNK_TIMEOUT_MS = 10000;
 const OVERPASS_TIMEOUT_MS = 8000;
 const MAX_SPLIT_DEPTH = 3;
 /** Roads a car can actually be placed on / driven along */
+/** Named places that hang a sign over their door (shops, restaurants, pharmacies...) */
+const POI_AMENITY = new Set(['restaurant', 'cafe', 'fast_food', 'pharmacy', 'bank', 'clinic', 'dentist', 'bar', 'pub', 'fuel', 'ice_cream', 'marketplace']);
+export function poiKind(tags) {
+  if (!tags?.name) return null;
+  if (tags.shop) return `shop=${tags.shop}`;
+  if (POI_AMENITY.has(tags.amenity)) return `amenity=${tags.amenity}`;
+  return null;
+}
+
 /** OSM man_made values built as towers (src/world/Towers.js) */
 export const TOWER_KINDS = new Set(['tower', 'mast', 'communications_tower', 'chimney', 'water_tower']);
 
@@ -143,6 +152,8 @@ function classify(element, out) {
     }
   }
   if (element.type === 'node') {
+    const kind = poiKind(tags);
+    if (kind) out.pois.push({ id: element.id, lat: element.lat, lon: element.lon, name: tags.name, kind });
     if (tags?.highway === 'traffic_signals') out.signals.push({ id: element.id, lat: element.lat, lon: element.lon });
     if (tags?.natural === 'tree') out.trees.push({ id: element.id, lat: element.lat, lon: element.lon, tags: { genus: tags.genus, species: tags.species, leaf_type: tags.leaf_type, height: tags.height } });
     return;
@@ -203,6 +214,13 @@ export function parseOsmXml(xml) {
     const signal = /<tag k="highway" v="traffic_signals"\s*\/>/.test(match[3]);
     const tree = /<tag k="natural" v="tree"\s*\/>/.test(match[3]);
     const manMade = /<tag k="man_made" v="([^"]*)"\s*\/>/.exec(match[3]);
+    if (/<tag k="name"/.test(match[3]) && /<tag k="(shop|amenity)"/.test(match[3])) {
+      const tags = {};
+      for (const [, k, val] of match[3].matchAll(/<tag k="(name|shop|amenity)" v="([^"]*)"\s*\/>/g)) tags[k] = val.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'");
+      const la = /lat="([^"]+)"/.exec(match[2]), lo = /lon="([^"]+)"/.exec(match[2]);
+      const kind = poiKind(tags);
+      if (kind && la && lo) out.pois.push({ id: match[1], lat: parseFloat(la[1]), lon: parseFloat(lo[1]), name: tags.name, kind });
+    }
     if (manMade && TOWER_KINDS.has(manMade[1])) {
       const tags = {};
       for (const [, k, val] of match[3].matchAll(/<tag k="([^"]*)" v="([^"]*)"\s*\/>/g)) tags[k] = val;
@@ -268,7 +286,7 @@ export function parseOsmXml(xml) {
 }
 
 function emptyParsed() {
-  return { roads: [], buildings: [], water: [], greenery: [], signals: [], landcover: [], trees: [], towers: [], partial: [] };
+  return { roads: [], buildings: [], water: [], greenery: [], signals: [], landcover: [], trees: [], towers: [], pois: [], partial: [] };
 }
 
 function merge(parts) {
@@ -428,7 +446,7 @@ async function completeRelations(parsed) {
 
 async function fetchOverpassBox(bbox) {
   const b = bboxToOverpass(bbox);
-  const query = `[out:json][timeout:8];(way["highway"](${b});way["building"](${b});way["natural"="water"](${b});way["waterway"](${b});way["landuse"~"forest|grass"](${b});way["leisure"~"park|garden"](${b});node["highway"="traffic_signals"](${b});node["natural"="tree"](${b});way["natural"="tree_row"](${b});nwr["man_made"~"^(tower|mast|communications_tower|chimney|water_tower)$"](${b});way["landuse"](${b});way["natural"~"wood|scrub|grassland|heath|beach|sand|bare_rock|scree|wetland|mud"](${b});way["leisure"~"pitch|golf_course|playground|sports_centre|stadium|track"](${b});way["amenity"~"parking|school|university|hospital|college"](${b});rel["type"="multipolygon"]["natural"~"water|wood|scrub|grassland|heath|beach|sand|wetland"](${b});rel["type"="multipolygon"]["landuse"](${b});rel["type"="multipolygon"]["leisure"~"park|garden|golf_course"](${b});rel["type"="multipolygon"]["building"](${b}););out geom;`;
+  const query = `[out:json][timeout:8];(way["highway"](${b});way["building"](${b});way["natural"="water"](${b});way["waterway"](${b});way["landuse"~"forest|grass"](${b});way["leisure"~"park|garden"](${b});node["highway"="traffic_signals"](${b});node["natural"="tree"](${b});way["natural"="tree_row"](${b});nwr["man_made"~"^(tower|mast|communications_tower|chimney|water_tower)$"](${b});node["name"]["shop"](${b});node["name"]["amenity"~"^(restaurant|cafe|fast_food|pharmacy|bank|clinic|dentist|bar|pub|fuel|ice_cream|marketplace)$"](${b});way["landuse"](${b});way["natural"~"wood|scrub|grassland|heath|beach|sand|bare_rock|scree|wetland|mud"](${b});way["leisure"~"pitch|golf_course|playground|sports_centre|stadium|track"](${b});way["amenity"~"parking|school|university|hospital|college"](${b});rel["type"="multipolygon"]["natural"~"water|wood|scrub|grassland|heath|beach|sand|wetland"](${b});rel["type"="multipolygon"]["landuse"](${b});rel["type"="multipolygon"]["leisure"~"park|garden|golf_course"](${b});rel["type"="multipolygon"]["building"](${b}););out geom;`;
 
   for (let attempt = 0; attempt < OVERPASS_ENDPOINTS.length; attempt++) {
     const index = (overpassIndex + attempt) % OVERPASS_ENDPOINTS.length;
@@ -493,7 +511,8 @@ function selectForChunk(parsed, bbox) {
   const signals = (parsed.signals || []).filter(inChunk);
   const trees = (parsed.trees || []).filter(inChunk);
   const towers = (parsed.towers || []).filter(inChunk);
-  return { roads, buildings, water, greenery, signals, landcover, trees, towers };
+  const pois = (parsed.pois || []).filter(inChunk);
+  return { roads, buildings, water, greenery, signals, landcover, trees, towers, pois };
 }
 
 function containsBox(outer, inner) {

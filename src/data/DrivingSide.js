@@ -18,6 +18,14 @@ const LEFT_HAND_BOXES = [
   [-5, 29, 5, 42],            // Uganda, Kenya, Tanzania
 ];
 
+/**
+ * Thailand and its neighbours (Laos, Cambodia, Vietnam, Myanmar, Malaysia): overhead wires on every
+ * street, pickups, motorbikes and tuk-tuks in traffic. shortcut: one box, rough at the borders.
+ */
+export function isSoutheastAsia(lat, lng) {
+  return lat > 0.8 && lat < 28.5 && lng > 92 && lng < 110;
+}
+
 /** @returns {boolean} true where traffic drives on the left */
 export function isLeftHandTraffic(lat, lng) {
   return LEFT_HAND_BOXES.some(([s, w, n, e]) => lat >= s && lat <= n && lng >= w && lng <= e);

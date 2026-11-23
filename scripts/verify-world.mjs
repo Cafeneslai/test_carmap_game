@@ -32,6 +32,8 @@ import { signalState, signalHeads, CYCLE_SECONDS } from '../src/world/TrafficLig
 import { TrafficManager, lanesPerDirection } from '../src/world/Traffic.js';
 import { towerSpec, towerGeometry, generateTowers, dropTowerParts } from '../src/world/Towers.js';
 import { isThaiTemple } from '../src/world/ThaiTemple.js';
+import { buildVehicle, pickKind } from '../src/world/Vehicles.js';
+import { signPlacements } from '../src/world/Signs.js';
 import { poleRows, generatePowerLines, hasOverheadWires } from '../src/world/PowerLines.js';
 import { markWaterBridges } from '../src/data/OSMFetcher.js';
 import { isLeftHandTraffic } from '../src/data/DrivingSide.js';
@@ -349,7 +351,7 @@ section('Traffic lights and NPC cars');
   const player = { x: 0, y: 0, z: 150 };
   traffic.update(0.6, player, 0); // builds the graph and spawns one car
   const car = traffic.cars[0];
-  car.s = 60; car.dirSign = 1; car.speed = car.max; // 140 m west of the light, heading east
+  car.s = 60; car.dirSign = 1; car.kind = 'car'; car.speed = car.max; // 140 m west of the light, heading east
   const run = (seconds, time) => { for (let t = 0; t < seconds; t += 1 / 30) traffic.update(1 / 30, player, time); };
   traffic.spawnTimer = 1e9;
   run(15, 15); // east-west phase is red at t = 15
@@ -376,8 +378,8 @@ section('Traffic lights and NPC cars');
   const p2 = { x: 0, y: 0, z: 150 };
   t2.update(0.6, p2, 0); t2.update(0.6, p2, 0);
   const [fast, slow] = t2.cars;
-  Object.assign(slow, { s: 380, dirSign: 1, lane: 0, speed: 3, max: 3, pos: null, yaw: null });
-  Object.assign(fast, { s: 340, dirSign: 1, lane: 0, speed: 13, max: 13, laneTimer: 0, pos: null, yaw: null });
+  Object.assign(slow, { kind: 'car', s: 380, dirSign: 1, lane: 0, speed: 3, max: 3, pos: null, yaw: null });
+  Object.assign(fast, { kind: 'car', s: 340, dirSign: 1, lane: 0, speed: 13, max: 13, laneTimer: 0, pos: null, yaw: null });
   t2.spawnTimer = 1e9;
   let minGap = Infinity;
   for (let t = 0; t < 10; t += 1 / 30) { t2.update(1 / 30, p2, 0); minGap = Math.min(minGap, Math.hypot(fast.mesh.position.x - slow.mesh.position.x, fast.mesh.position.z - slow.mesh.position.z)); }
@@ -392,7 +394,7 @@ section('Traffic lights and NPC cars');
   const p3 = { x: -100, y: 0, z: 100 };
   t3.update(0.6, p3, 0);
   const turner = t3.cars[0];
-  Object.assign(turner, { way: t3.ways.find((w) => w.road === legA), s: 120, dirSign: 1, lane: 0, speed: 8, max: 8, next: null, pos: null, yaw: null });
+  Object.assign(turner, { kind: 'car', way: t3.ways.find((w) => w.road === legA), s: 120, dirSign: 1, lane: 0, speed: 8, max: 8, next: null, pos: null, yaw: null });
   t3.spawnTimer = 1e9;
   let maxStep = 0, cornerSpeed = Infinity, prev = null;
   for (let t = 0; t < 20; t += 1 / 30) {
@@ -745,6 +747,41 @@ section('Roads on hills, bridges, towers');
   for (let i = 0; i < wires.count; i++) lowest = Math.min(lowest, wires.getY(i));
   check('each pole is built once across chunks and wires sag between poles', poleCount === rows.length && lowest > 4 && lowest < 5.8, `${poleCount}/${rows.length} poles, lowest wire ${lowest.toFixed(1)} m`);
   check('no poles on footways, driveways or bridges', poleRows([{ tags: { highway: 'footway' }, geometry: soi.geometry }, { tags: { highway: 'service', service: 'driveway' }, geometry: soi.geometry }, { tags: { highway: 'residential', bridge: 'yes' }, geometry: soi.geometry }], ORIGIN.lat, ORIGIN.lng, true).length === 0);
+  // Thai traffic: pickups, motorbikes, tuk-tuks, songthaews and taxis; cars only elsewhere
+  const kinds = new Set(Array.from({ length: 200 }, (_, i) => pickKind(true, i / 200)));
+  check('the Thai street mix has every vehicle kind, other countries only cars', ['car', 'pickup', 'motorbike', 'taxi', 'tuktuk', 'songthaew'].every((k) => kinds.has(k)) && pickKind(false, 0.5) === 'car');
+  const sizes = ['car', 'pickup', 'motorbike', 'tuktuk', 'songthaew', 'taxi'].map((k) => {
+    const v = buildVehicle(k);
+    const bb = new THREE.Box3().setFromObject(v.mesh);
+    return { k, len: bb.max.z - bb.min.z, wid: bb.max.x - bb.min.x, fits: Math.abs((bb.max.z - bb.min.z) / 2 - v.half[2]) < 0.4 };
+  });
+  check('vehicles have real sizes (motorbike ~2 m, tuk-tuk ~3 m, pickup ~5 m) and colliders that fit', sizes.every((s) => s.fits) &&
+    sizes.find((s) => s.k === 'motorbike').len < 2.2 && near(sizes.find((s) => s.k === 'tuktuk').len, 2.8, 0.4) && near(sizes.find((s) => s.k === 'pickup').len, 5.2, 0.3),
+    sizes.map((s) => `${s.k} ${s.len.toFixed(1)}x${s.wid.toFixed(1)}`).join(', '));
+  // Real shop names: a pharmacy node 3 m in front of a shophouse gets its sign on that wall, facing the street
+  const pois = parseOsmXml(`<osm><node id="5" lat="13.2836" lon="100.9268"><tag k="amenity" v="pharmacy"/><tag k="name" v="สมบูรณ์โอสถ"/></node><node id="6" lat="13.2836" lon="100.9269"><tag k="shop" v="bakery"/></node></osm>`).pois;
+  check('named shops and pharmacies are read from OSM nodes (unnamed ones skipped)', pois.length === 1 && pois[0].name === 'สมบูรณ์โอสถ' && pois[0].kind === 'amenity=pharmacy');
+  const shopRing = { pts: [[-6, 3], [6, 3], [6, 15], [-6, 15], [-6, 3]].map(([x, z]) => new THREE.Vector2(x, z)), floorY: 0 };
+  const [sign] = signPlacements([{ x: 1, z: 0, name: 'สมบูรณ์โอสถ', kind: 'amenity=pharmacy' }], [shopRing]);
+  check('the sign hangs on the street wall above the ground floor, facing out', sign && near(sign.z, 2.88, 0.05) && sign.nz < -0.99 && sign.y > 3 && sign.width <= 7,
+    sign && `z=${sign.z.toFixed(2)}, y=${sign.y.toFixed(1)}, ${sign.width.toFixed(1)} m wide`);
+  // Bug: walls of clockwise outlines had their texture mirrored (shop lettering read backwards)
+  const uRight = (ring) => {
+    const g = wallBands(ring, 0, 6, 3, new THREE.Color(1, 1, 1)).upper;
+    const p = g.attributes.position, uv = g.attributes.uv, n = g.attributes.normal;
+    let ok = true;
+    for (let i = 0; i < p.count; i += 6) {
+      // Right as seen from outside the wall: (n.z, -n.x)
+      const rx = n.getZ(i), rz = -n.getX(i);
+      for (let k = 1; k < 6; k++) {
+        const du = uv.getX(i + k) - uv.getX(i), dp = (p.getX(i + k) - p.getX(i)) * rx + (p.getZ(i + k) - p.getZ(i)) * rz;
+        if (Math.abs(dp) > 0.1 && Math.sign(du) !== Math.sign(dp)) ok = false;
+      }
+    }
+    return ok;
+  };
+  const ccw = [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]].map(([x, z]) => new THREE.Vector2(x, z));
+  check('wall textures read left-to-right from outside on both outline directions', uRight(ccw) && uRight([...ccw].reverse()));
   check('towers get a mesh and a collider', tgroup.children.length >= 1 && tgroup.userData.body.shapes.length === 1);
 }
 

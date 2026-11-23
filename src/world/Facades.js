@@ -16,7 +16,8 @@ export const UPPER_TILE_H = 6;     // two 3 m floors per repeat up the wall
 export const GROUND_H = 3;         // height of the ground floor above the street
 export const WALL_SINK = 0.5;      // walls start this far below the ground (no gaps on slopes)
 const GROUND_TILE_H = GROUND_H + WALL_SINK;
-const PX = 256 / TILE_W;           // texture pixels per metre
+const PX_GROUND = 1024 / TILE_W;   // texture pixels per metre: sharp enough for shop-sign lettering
+const PX_UPPER = 512 / TILE_W;     // windows need less
 
 export const STYLES = ['generic', 'house', 'shophouse', 'apartment', 'office', 'industrial', 'civic'];
 
@@ -83,10 +84,10 @@ function seeded(seed) {
 }
 
 /** Two canvases (colour, glow) with a y-up metre coordinate system */
-function canvases(heightM, lift = 0) {
+function canvases(heightM, lift = 0, PX = PX_UPPER) {
   const make = () => {
     const c = document.createElement('canvas');
-    c.width = 256;
+    c.width = Math.round(TILE_W * PX);
     c.height = Math.round(heightM * PX);
     const ctx = c.getContext('2d');
     ctx.setTransform(PX, 0, 0, -PX, 0, c.height); // x right, y up, in metres
@@ -196,6 +197,23 @@ const UPPER = {
 };
 
 const SIGN_COLORS = ['#c8102e', '#0057a8', '#f2b705', '#1d8a3a', '#e85d04', '#ffffff'];
+// What Thai shophouses sell, for the boards over their shutters
+const THAI_SHOPS = ['ก๋วยเตี๋ยว', 'ร้านขายยา', 'ร้านทอง', 'ข้าวมันไก่', 'ซ่อมรถ', 'มินิมาร์ท', 'กาแฟสด', 'เสริมสวย',
+  'วัสดุก่อสร้าง', 'ร้านข้าวต้ม', 'โทรศัพท์มือถือ', 'ร้านแว่นตา', 'ผ้าม่าน', 'ร้านอาหารตามสั่ง', 'ซักรีด', 'เครื่องเขียน'];
+export const THAI_FONT = '"Leelawadee UI", "Noto Sans Thai", Tahoma, sans-serif';
+
+/** Text in a y-up, metre-scaled canvas (the tiles are drawn bottom-up, so text must be flipped back) */
+function signText(ctx, text, cx, cy, height, maxWidth, color) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(1, -1);
+  ctx.fillStyle = color;
+  ctx.font = `bold ${height}px ${THAI_FONT}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 0, 0, maxWidth);
+  ctx.restore();
+}
 
 const GROUND = {
   generic(w, g, r) {
@@ -217,10 +235,11 @@ const GROUND = {
     for (let b = 0; b < 3; b++) {
       const x0 = b * 4;
       w.fillStyle = 'rgba(0,0,0,0.1)'; w.fillRect(x0, 0, 0.25, GROUND_H);
-      w.fillStyle = SIGN_COLORS[(b * 2 + Math.floor(r() * 2)) % SIGN_COLORS.length];
+      const board = SIGN_COLORS[(b * 2 + Math.floor(r() * 2)) % SIGN_COLORS.length];
+      w.fillStyle = board;
       w.fillRect(x0 + 0.3, 2.45, 3.4, 0.5);
-      w.fillStyle = 'rgba(255,255,255,0.75)'; // lettering stripes
-      for (let k = 0; k < 4; k++) w.fillRect(x0 + 0.6 + k * 0.75, 2.6, 0.5, 0.18);
+      const word = THAI_SHOPS[Math.floor(r() * THAI_SHOPS.length)];
+      signText(w, word, x0 + 2, 2.7, 0.34, 3.1, board === '#ffffff' || board === '#f2b705' ? '#b3121f' : '#ffffff');
       if (r() < 0.45) {
         // Steel roller shutter
         w.fillStyle = '#a7abae'; w.fillRect(x0 + 0.3, 0, 3.4, 2.4);
@@ -290,6 +309,52 @@ function texture(canvas, repeatY, clampY = false) {
 }
 
 /**
+ * Weathering in world space, so neighbouring buildings never repeat: rows of tiles on pitched roofs,
+ * water stains on flat roofs, and the dark rain streaks running down tropical concrete walls.
+ */
+function addWeathering(material) {
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>
+varying vec3 vWPos;
+varying vec3 vWNormal;`)
+      .replace('#include <worldpos_vertex>', `#include <worldpos_vertex>
+vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+vWNormal = normalize(mat3(modelMatrix) * objectNormal);`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>
+varying vec3 vWPos;
+varying vec3 vWNormal;
+float wHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float wNoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(wHash(i), wHash(i + vec2(1, 0)), f.x), mix(wHash(i + vec2(0, 1)), wHash(i + vec2(1, 1)), f.x), f.y);
+}`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+{
+  float up = abs(vWNormal.y);
+  float stain = wNoise(vWPos.xz * 0.15) * 0.6 + wNoise(vWPos.xz * 0.9) * 0.4;
+  float k = 1.0;
+  if (up > 0.97) {
+    k = 0.82 + 0.25 * stain; // flat roof: patchy concrete and water stains
+  } else if (up > 0.2) {
+    float row = fract(vWPos.y / 0.32); // tile courses run level along a pitched roof
+    k = (0.86 + 0.14 * smoothstep(0.0, 0.25, row)) * (0.9 + 0.15 * stain);
+  } else {
+    // Rain streaks: narrow vertical bands, darkest just under the roof line, fading down the wall
+    vec2 along = vec2(vWPos.x + vWPos.z, 0.0);
+    float streak = smoothstep(0.55, 0.95, wNoise(vec2(along.x * 1.7, floor(vWPos.y / 40.0))));
+    float fade = 0.5 + 0.5 * wNoise(vec2(along.x * 0.3, vWPos.y * 0.08));
+    k = 1.0 - 0.22 * streak * fade - 0.06 * (1.0 - wNoise(vWPos.xz * 0.05 + vWPos.y * 0.02));
+  }
+  diffuseColor.rgb *= k;
+}`);
+  };
+  material.customProgramCacheKey = () => 'weathered';
+}
+
+/**
  * Shared materials: `plain` for roofs, then { upper, ground } per style.
  * Outside the browser (verify script) they have no textures.
  */
@@ -301,6 +366,7 @@ export function getFacadeMaterials() {
       map, emissive: emissiveMap ? 0xffffff : 0x000000, emissiveMap,
     });
     if (emissiveMap) registerBuildingMaterial(m); // windows and shops light up at night
+    addWeathering(m);
     return m;
   };
   materials = { plain: make(null, null) };
@@ -311,7 +377,7 @@ export function getFacadeMaterials() {
     }
     const up = canvases(UPPER_TILE_H);
     UPPER[style](up.wall, up.glow, seeded(101 + si * 7));
-    const gr = canvases(GROUND_TILE_H, WALL_SINK);
+    const gr = canvases(GROUND_TILE_H, WALL_SINK, PX_GROUND);
     GROUND[style](gr.wall, gr.glow, seeded(211 + si * 13));
     materials[style] = {
       upper: make(texture(up.canvases[0], UPPER_TILE_H), texture(up.canvases[1], UPPER_TILE_H)),

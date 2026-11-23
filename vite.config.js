@@ -18,6 +18,7 @@ export default defineConfig({
           physics: ['cannon-es'],
           map: ['leaflet'],
           tiles: ['pmtiles', '@mapbox/vector-tile', 'pbf'],
+          postfx: ['n8ao'],
         },
       },
     },

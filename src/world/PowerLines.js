@@ -10,6 +10,7 @@ import * as CANNON from 'cannon-es';
 import { ROAD_WIDTHS, CHUNK_SIZE } from '../config.js';
 import { latLngToMeters } from '../data/GeoUtils.js';
 import { getElevationAt } from './ElevationUtils.js';
+import { isSoutheastAsia } from '../data/DrivingSide.js';
 
 const WIRED_ROADS = new Set(['primary', 'secondary', 'tertiary', 'residential', 'unclassified', 'living_street', 'service',
   'primary_link', 'secondary_link', 'tertiary_link']);
@@ -20,13 +21,8 @@ const MAX_POLES_PER_CHUNK = 300;
 // [sideways offset from the pole, height, sag] per wire: three power wires, then the telecom bundle
 const WIRES = [[-0.7, 8.6, 0.5], [0, 8.6, 0.5], [0.7, 8.6, 0.5], [0.15, 6.4, 0.9], [0.3, 6.2, 1.1], [0.05, 6.0, 1.3], [0.25, 5.8, 1.0]];
 
-/**
- * Shortcut: mainland South-East Asia as a box (Thailand, Laos, Cambodia, Vietnam, Myanmar, Malaysia).
- * Upgrade to per-country data together with the driving-side roadmap item.
- */
-export function hasOverheadWires(lat, lng) {
-  return lat > 0.8 && lat < 28.5 && lng > 92 && lng < 110;
-}
+/** Streets with overhead wires: Thailand and its neighbours */
+export const hasOverheadWires = isSoutheastAsia;
 
 const poleGeometry = new THREE.CylinderGeometry(0.11, 0.17, POLE_HEIGHT, 4).rotateY(Math.PI / 4).translate(0, POLE_HEIGHT / 2, 0);
 const armGeometry = new THREE.BoxGeometry(1.8, 0.12, 0.12).translate(0, 8.5, 0);

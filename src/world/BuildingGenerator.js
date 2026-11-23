@@ -8,6 +8,7 @@ import { DEFAULT_BUILDING_HEIGHT, METERS_PER_FLOOR } from '../config.js';
 import { latLngToMeters } from '../data/GeoUtils.js';
 import { getElevationAt } from './ElevationUtils.js';
 import { isThaiTemple, thaiTempleRoof, templeWallHeight } from './ThaiTemple.js';
+import { generateSigns } from './Signs.js';
 import { facadeStyle, getFacadeMaterials, WALL_COLORS, ROOF_FLAT, GROUND_H, WALL_SINK } from './Facades.js';
 import { landcoverType } from '../data/OSMFetcher.js';
 
@@ -19,7 +20,7 @@ import { landcoverType } from '../data/OSMFetcher.js';
  * @param {number[][]} elevationData - Chunk elevation grid
  * @returns {THREE.Group | null} meshes are grouped per shared facade material
  */
-export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWorldZ, originLat, originLng, baseElevation = null, landcover = [], roads = []) {
+export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWorldZ, originLat, originLng, baseElevation = null, landcover = [], roads = [], pois = []) {
   const group = new THREE.Group();
   const byMaterial = new Map(); // "plain" | "style:upper" | "style:ground" -> geometries
   const add = (key, geometry) => {
@@ -54,6 +55,17 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
       return Math.hypot(p.x - a.x - t * dx, p.y - a.z - t * dz) < 12; // half a road width + a sidewalk
     });
   });
+  // Shop signs: walls they can hang on, and the named places that want one
+  const signRings = [];
+  const signAnchors = (pois || []).map((p) => ({ ...latLngToMeters(p.lat, p.lon, originLat, originLng), name: p.name, kind: p.kind }));
+  const streetDist = (q) => {
+    let d = Infinity;
+    for (const road of roads || []) {
+      if (!road.geometry) continue;
+      for (const n of road.geometry) { const m = latLngToMeters(n.lat, n.lon, originLat, originLng); d = Math.min(d, Math.hypot(m.x - q.x, m.z - q.y)); }
+    }
+    return d;
+  };
   const landuseAt = (x, z) => areas.find((a) => x >= a.minX && x <= a.maxX && z >= a.minZ && z <= a.maxZ && insidePolygon(x, z, a.pts))?.kind ?? null;
 
   for (const building of buildings) {
@@ -120,6 +132,16 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
       continue;
     }
     addCollisionBox(body, shapePoints, lowest - WALL_SINK, floorY + height - (lowest - WALL_SINK), holes);
+    signRings.push({ pts: shapePoints, floorY });
+    const t = building.tags || {};
+    if (t.name && (t.shop || t.amenity || t.tourism || t.office || t.craft) && signAnchors.length < 200) {
+      // A named shop building signs the wall that faces the street (by its corner nearest a road)
+      let best = shapePoints[0], bestD = Infinity;
+      for (const q of shapePoints) { const d = streetDist(q); if (d < bestD) { bestD = d; best = q; } }
+      const i = Math.max(0, shapePoints.indexOf(best));
+      const nb = shapePoints[i + 1] ?? shapePoints[i - 1];
+      signAnchors.push({ x: (best.x + nb.x) / 2, z: (best.y + nb.y) / 2, name: t.name, kind: t.shop ? `shop=${t.shop}` : `amenity=${t.amenity}` });
+    }
 
     const area = Math.abs(polygonArea(shapePoints));
     const rect = orientedRect(shapePoints);
@@ -144,7 +166,9 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
     }
   }
 
-  if (byMaterial.size === 0) return null;
+  const signs = generateSigns(signAnchors, signRings);
+  if (signs) group.add(signs);
+  if (byMaterial.size === 0 && !signs) return null;
   const materials = getFacadeMaterials();
   for (const [key, geometries] of byMaterial) {
     const merged = mergeGeometries(geometries);
@@ -210,7 +234,9 @@ export function wallBands(points, floorY, height, bay, color, inward = false, gr
       const s = (area2 > 0 ? 1 : -1) * (inward ? -1 : 1);
       const nx = (s * dz) / len, nz = (-s * dx) / len;
       const uLen = Math.max(1, Math.round(len / bay)) * bay;
-      const u0 = uStart, u1 = uStart + uLen;
+      // u must grow to the right as seen from outside, or shop lettering reads backwards on half the walls
+      const mirrored = dx * nz - dz * nx < 0;
+      const u0 = mirrored ? uStart + uLen : uStart, u1 = mirrored ? uStart : uStart + uLen;
       const ya = lowAt(a), yb = lowAt(b), top = highAt();
       const A0 = [a.x, ya, a.y], B0 = [b.x, yb, b.y], B1 = [b.x, top, b.y], A1 = [a.x, top, a.y];
       const va0 = vAt(ya), vb0 = vAt(yb), v1 = vAt(top);

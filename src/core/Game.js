@@ -2,6 +2,7 @@
  * Game.js — Main game loop & state management
  */
 
+import { PostFX } from './PostFX.js';
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { GAME_STATES, CAMERA_FOV, CAMERA_NEAR, CAMERA_FAR, PHYSICS_STEP } from '../config.js';
@@ -60,6 +61,7 @@ export class Game {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.0; // the sky now adds image-based light on top of sun + ambient
+    this.postFX = new PostFX(this.renderer, this.scene, this.camera); // ambient occlusion
 
     // ---- Lighting ----
     this._setupLighting();
@@ -297,7 +299,7 @@ export class Game {
     );
 
     this.input.update();
-    this.renderer.render(this.scene, this.camera);
+    this.postFX.render(this.scene, this.camera);
   }
 
   _updatePlaying(delta, elapsed) {
@@ -359,5 +361,6 @@ export class Game {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
+    this.postFX.setSize(w, h);
   }
 }
