@@ -18,6 +18,7 @@ import { isLeftHandTraffic } from '../data/DrivingSide.js';
 import { paintGround, getGroundDetailTexture } from './GroundPainter.js';
 import { satelliteGround } from './SatelliteGround.js';
 import { generateTowers, dropTowerParts } from './Towers.js';
+import { generatePowerLines, hasOverheadWires } from './PowerLines.js';
 
 // Bump when the shape or orientation of cached data changes. v3: elevation comes from the shared
 // world lattice (ElevationField), rows run north->south, buildings belong to a single chunk.
@@ -131,7 +132,10 @@ export class WorldBuilder {
       }
       const lamps = generateStreetLamps(osmData.roads, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base);
       const signals = generateTrafficLights(osmData.signals, osmData.roads, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base, this.leftHand);
-      for (const extra of [lamps, signals]) {
+      const wires = hasOverheadWires(originLat, originLng)
+        ? generatePowerLines(osmData.roads, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base, this.leftHand)
+        : null;
+      for (const extra of [lamps, signals, wires]) {
         if (!extra) continue;
         chunk.meshGroup.add(extra);
         physicsWorld.addBody(extra.userData.body);

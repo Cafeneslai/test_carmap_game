@@ -32,6 +32,7 @@ import { signalState, signalHeads, CYCLE_SECONDS } from '../src/world/TrafficLig
 import { TrafficManager, lanesPerDirection } from '../src/world/Traffic.js';
 import { towerSpec, towerGeometry, generateTowers, dropTowerParts } from '../src/world/Towers.js';
 import { isThaiTemple } from '../src/world/ThaiTemple.js';
+import { poleRows, generatePowerLines, hasOverheadWires } from '../src/world/PowerLines.js';
 import { markWaterBridges } from '../src/data/OSMFetcher.js';
 import { isLeftHandTraffic } from '../src/data/DrivingSide.js';
 import { lightingAt, sunDirection, solarHourNow } from '../src/world/DayNight.js';
@@ -732,6 +733,18 @@ section('Roads on hills, bridges, towers');
   check('a chedi outline is not also built as a box', generateBuildings([chediB], flat(), 0, 0, ORIGIN.lat, ORIGIN.lng, 0) === null);
   const chediMesh = generateTowers([{ id: 'c', ...at(30, 30), width: 10, tags: { man_made: 'tower', 'tower:type': 'pagoda' } }], flat(), 0, 0, ORIGIN.lat, ORIGIN.lng, 0);
   check('a chedi gets a mesh of its height', chediMesh.children.some((m) => m.userData.tower === 'chedi' && (m.geometry.computeBoundingBox(), near(m.geometry.boundingBox.max.y, 23, 1))));
+  // Thai streets: concrete poles on the kerb side every 40 m with sagging wires between them
+  const soi = { tags: { highway: 'residential' }, geometry: [at(-300, 20), at(300, 20)] };
+  const rows = poleRows([soi], ORIGIN.lat, ORIGIN.lng, true)[0];
+  check('poles stand on the left kerb in left-hand traffic, 40 m apart', rows.every((p) => near(p.z, 20 - 4.2, 0.1)) && near(rows[1].x - rows[0].x, 40, 0.1), `z=${rows[0].z.toFixed(1)}`);
+  check('overhead wires in Thailand, not in London or Tokyo', hasOverheadWires(13.75, 100.5) && hasOverheadWires(13.28, 100.93) && !hasOverheadWires(51.5, -0.12) && !hasOverheadWires(35.66, 139.75));
+  const perChunkPoles = [-1, 0, 1].map((cx) => generatePowerLines([soi], flat(), cx * CHUNK_SIZE, 0, ORIGIN.lat, ORIGIN.lng, 0, true));
+  const poleCount = perChunkPoles.reduce((n, g) => n + (g?.children[0].count ?? 0), 0);
+  const wires = perChunkPoles[1].children.find((c) => c.isLineSegments).geometry.attributes.position;
+  let lowest = Infinity;
+  for (let i = 0; i < wires.count; i++) lowest = Math.min(lowest, wires.getY(i));
+  check('each pole is built once across chunks and wires sag between poles', poleCount === rows.length && lowest > 4 && lowest < 5.8, `${poleCount}/${rows.length} poles, lowest wire ${lowest.toFixed(1)} m`);
+  check('no poles on footways, driveways or bridges', poleRows([{ tags: { highway: 'footway' }, geometry: soi.geometry }, { tags: { highway: 'service', service: 'driveway' }, geometry: soi.geometry }, { tags: { highway: 'residential', bridge: 'yes' }, geometry: soi.geometry }], ORIGIN.lat, ORIGIN.lng, true).length === 0);
   check('towers get a mesh and a collider', tgroup.children.length >= 1 && tgroup.userData.body.shapes.length === 1);
 }
 

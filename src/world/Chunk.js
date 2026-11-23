@@ -77,7 +77,7 @@ export class Chunk {
     this.meshGroup.traverse((child) => {
       if (child.isInstancedMesh) child.dispose(); // frees the per-chunk instance buffers only
       if (child.userData.ownTexture) child.material.map?.dispose(); // per-chunk painted ground
-      if (child instanceof THREE.Mesh && !child.userData.shared) {
+      if ((child.isMesh || child.isLine) && !child.userData.shared) { // lines: overhead wires
         if (child.geometry) child.geometry.dispose();
         // Building facades use materials shared by the whole city; only the geometry is per chunk
         if (child.material && !child.userData.sharedMaterial) {
