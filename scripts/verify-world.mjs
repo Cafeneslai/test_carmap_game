@@ -29,7 +29,7 @@ import { lampPositions, generateStreetLamps } from '../src/world/StreetLamps.js'
 import { buildingHeight, pitchedRoof, wallBands, tagColor } from '../src/world/BuildingGenerator.js';
 import { facadeStyle } from '../src/world/Facades.js';
 import { signalState, signalHeads, CYCLE_SECONDS } from '../src/world/TrafficLights.js';
-import { TrafficManager } from '../src/world/Traffic.js';
+import { TrafficManager, lanesPerDirection } from '../src/world/Traffic.js';
 import { isLeftHandTraffic } from '../src/data/DrivingSide.js';
 import { lightingAt, sunDirection, solarHourNow } from '../src/world/DayNight.js';
 import { weatherFromApi, weatherIcon } from '../src/world/Weather.js';
@@ -314,7 +314,7 @@ section('Traffic lights and NPC cars');
 
   // East-west two-way road with a signal in the middle
   const sigNode = at(0, 0);
-  const road = { id: 'r1', tags: { highway: 'primary' }, geometry: [at(-200, 0), sigNode, at(200, 0)] };
+  const road = { id: 'r1', tags: { highway: 'primary', lanes: '2' }, geometry: [at(-200, 0), sigNode, at(200, 0)] };
   const right = signalHeads([sigNode], [road], ORIGIN.lat, ORIGIN.lng, false);
   const left = signalHeads([sigNode], [road], ORIGIN.lat, ORIGIN.lng, true);
   // Travelling east (+X), the driver's right is +Z (facing +Z, +X is left)
@@ -349,6 +349,47 @@ section('Traffic lights and NPC cars');
   check('NPC car brakes for the player in front', car.speed < 0.1 && blocker.x - car.mesh.position.x > 7, `gap ${(blocker.x - car.mesh.position.x).toFixed(1)} m`);
   traffic.dispose();
   check('traffic cleans up its cars and bodies', traffic.cars.length === 0 && world.bodies.length === 0 && scene.children.length === 0);
+
+  check('lanes per direction: OSM lanes tag, else from road width',
+    lanesPerDirection({ tags: { highway: 'primary', lanes: '4' } }) === 2 && lanesPerDirection({ tags: { highway: 'secondary', oneway: 'yes', lanes: '3' } }) === 3 &&
+    lanesPerDirection({ tags: { highway: 'residential' } }) === 1 && lanesPerDirection({ tags: { highway: 'trunk' } }) === 2);
+
+  // Lane change: a fast car stuck behind a slow one on a 4-lane road moves over and passes
+  const wide = { id: 'r2', tags: { highway: 'primary', lanes: '4' }, geometry: [at(-400, 0), at(400, 0)] };
+  const cm2 = { ...chunkManager, chunks: new Map(), getLoadedRoads: () => [wide] };
+  const t2 = new TrafficManager(new THREE.Scene(), new CANNON.World(), cm2);
+  const p2 = { x: 0, y: 0, z: 150 };
+  t2.update(0.6, p2, 0); t2.update(0.6, p2, 0);
+  const [fast, slow] = t2.cars;
+  Object.assign(slow, { s: 380, dirSign: 1, lane: 0, speed: 3, max: 3 });
+  Object.assign(fast, { s: 340, dirSign: 1, lane: 0, speed: 13, max: 13, laneTimer: 0 });
+  t2.spawnTimer = 1e9;
+  let minGap = Infinity;
+  for (let t = 0; t < 10; t += 1 / 30) { t2.update(1 / 30, p2, 0); minGap = Math.min(minGap, Math.hypot(fast.mesh.position.x - slow.mesh.position.x, fast.mesh.position.z - slow.mesh.position.z)); }
+  check('a fast NPC changes lane and overtakes a slow one', fast.lane === 1 && fast.s > slow.s && minGap > 2, `lane ${fast.lane}, ahead by ${(fast.s - slow.s).toFixed(0)} m, closest ${minGap.toFixed(1)} m`);
+  t2.dispose();
+
+  // Turn: an L junction is driven as an arc at turning speed, without teleporting
+  const legA = { id: 'a', tags: { highway: 'residential' }, geometry: [at(-200, 0), at(0, 0)] };
+  const legB = { id: 'b', tags: { highway: 'residential', oneway: 'yes' }, geometry: [at(0, 0), at(0, 200)] };
+  const cm3 = { ...chunkManager, chunks: new Map(), getLoadedRoads: () => [legA, legB] };
+  const t3 = new TrafficManager(new THREE.Scene(), new CANNON.World(), cm3);
+  const p3 = { x: -100, y: 0, z: 100 };
+  t3.update(0.6, p3, 0);
+  const turner = t3.cars[0];
+  Object.assign(turner, { way: t3.ways.find((w) => w.road === legA), s: 120, dirSign: 1, lane: 0, speed: 8, max: 8, next: null, pos: null, yaw: null });
+  t3.spawnTimer = 1e9;
+  let maxStep = 0, cornerSpeed = Infinity, prev = null;
+  for (let t = 0; t < 20; t += 1 / 30) {
+    t3.update(1 / 30, p3, 0);
+    const q = turner.mesh.position.clone();
+    if (prev) maxStep = Math.max(maxStep, q.distanceTo(prev));
+    if (Math.abs(q.x) < 4 && Math.abs(q.z) < 4) cornerSpeed = Math.min(cornerSpeed, turner.speed);
+    prev = q;
+  }
+  check('NPC slows down for a 90° turn and drives it without jumping', cornerSpeed < 7 && maxStep < 0.5 && turner.way.road === legB && near(turner.mesh.position.x, 0, 0.3),
+    `corner ${(cornerSpeed * 3.6).toFixed(0)} km/h, max step ${maxStep.toFixed(2)} m, x=${turner.mesh.position.x.toFixed(2)}`);
+  t3.dispose();
 }
 
 // ------------------------------------------------------------------------------------------
