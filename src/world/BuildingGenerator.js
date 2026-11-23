@@ -7,6 +7,7 @@ import * as CANNON from 'cannon-es';
 import { DEFAULT_BUILDING_HEIGHT, METERS_PER_FLOOR } from '../config.js';
 import { latLngToMeters } from '../data/GeoUtils.js';
 import { getElevationAt } from './ElevationUtils.js';
+import { isThaiTemple, thaiTempleRoof, templeWallHeight } from './ThaiTemple.js';
 import { facadeStyle, getFacadeMaterials, WALL_COLORS, ROOF_FLAT, GROUND_H, WALL_SINK } from './Facades.js';
 import { landcoverType } from '../data/OSMFetcher.js';
 
@@ -57,6 +58,8 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
 
   for (const building of buildings) {
     if (!building.geometry || building.geometry.length < 3) continue;
+    // A chedi mapped as a building outline is drawn by Towers.js
+    if (tropical && building.tags?.man_made === 'tower' && building.tags['tower:type'] === 'pagoda') continue;
     const height = buildingHeight(building);
 
     const shapePoints = building.geometry.map((node) => {
@@ -89,6 +92,18 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
       floorY = Math.max(floorY, y);
       lowest = Math.min(lowest, y);
     }
+    // Thai temple hall: white walls under a tiered roof with golden gables and chofa
+    const templeRect = isThaiTemple(building.tags, tropical) && !holes.length ? orientedRect(shapePoints) : null;
+    if (templeRect && templeRect.halfV >= 1.5) {
+      const wallH = templeWallHeight(parseFloat(building.tags.height), templeRect.halfV);
+      const walls = wallBands(shapePoints, floorY, wallH, 3, TEMPLE_WALL, false, groundAt);
+      add('plain', walls.ground);
+      add('plain', walls.upper);
+      for (const g of thaiTempleRoof(templeRect, floorY + wallH)) add('plain', g);
+      addCollisionBox(body, shapePoints, lowest - WALL_SINK, floorY + wallH - (lowest - WALL_SINK), holes);
+      continue;
+    }
+
     // A part that starts above the ground (a skybridge, the upper sections of a tower) floats at min_height
     const minH = Math.min(minHeight(building), height - 0.5);
     if (minH > 0) {
@@ -147,6 +162,7 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
   return group;
 }
 
+const TEMPLE_WALL = new THREE.Color(0xf4f1e8);
 const SHOP_STREETS = new Set(['trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'primary_link', 'secondary_link', 'tertiary_link']);
 
 /** Metres between window bays per style: wall lengths are rounded to whole bays so no window is cut */

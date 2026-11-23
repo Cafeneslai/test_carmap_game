@@ -31,6 +31,7 @@ import { facadeStyle } from '../src/world/Facades.js';
 import { signalState, signalHeads, CYCLE_SECONDS } from '../src/world/TrafficLights.js';
 import { TrafficManager, lanesPerDirection } from '../src/world/Traffic.js';
 import { towerSpec, towerGeometry, generateTowers, dropTowerParts } from '../src/world/Towers.js';
+import { isThaiTemple } from '../src/world/ThaiTemple.js';
 import { markWaterBridges } from '../src/data/OSMFetcher.js';
 import { isLeftHandTraffic } from '../src/data/DrivingSide.js';
 import { lightingAt, sunDirection, solarHourNow } from '../src/world/DayNight.js';
@@ -717,6 +718,20 @@ section('Roads on hills, bridges, towers');
   const kept = dropTowerParts([floating, { id: 8, tags: { building: 'yes' }, bounds: { minLat: 0, maxLat: 0, minLon: 0, maxLon: 0 } },
     { ...floating, id: 9, bounds: { minLat: at(0, 0).lat, maxLat: at(0, 0).lat, minLon: at(0, 0).lon, maxLon: at(0, 0).lon } }], [towerAt], ORIGIN.lat, ORIGIN.lng);
   check('OSM sections inside a tower outline give way to the tower model', kept.length === 2 && !kept.some((b) => b.id === 9));
+  // Thailand: floodlight masts were drawn as 60 m red-white radio masts, chedis as grey boxes, temples as offices
+  const flood = towerSpec({ tags: { man_made: 'mast', 'tower:type': 'lighting' } }, true);
+  check('a floodlight mast is a 25 m grey pole, not a banded radio mast', flood.shape === 'pole' && flood.height === 25 && !flood.banded);
+  const chedi = towerSpec({ width: 10, tags: { man_made: 'tower', 'tower:type': 'pagoda' } }, true);
+  check('a pagoda in Thailand is a chedi about twice as tall as its base', chedi.shape === 'chedi' && near(chedi.height, 23, 0.1));
+  const wat = { id: 21, tags: { building: 'temple' }, geometry: square(-10, -5, 10, 5) };
+  const watBox = new THREE.Box3().setFromObject(generateBuildings([wat], flat(), 0, 0, ORIGIN.lat, ORIGIN.lng, 0));
+  check('a Thai temple hall gets a steep roof with overhanging eaves', isThaiTemple(wat.tags, true) && watBox.max.y > 9 && watBox.max.z > 5.5 && watBox.min.z < -5.5,
+    `top ${watBox.max.y.toFixed(1)} m, eaves z ${watBox.min.z.toFixed(1)}..${watBox.max.z.toFixed(1)}`);
+  check('temples outside the tropics keep the normal building', !isThaiTemple(wat.tags, false));
+  const chediB = { id: 22, tags: { building: 'temple', man_made: 'tower', 'tower:type': 'pagoda' }, geometry: square(-5, -5, 5, 5) };
+  check('a chedi outline is not also built as a box', generateBuildings([chediB], flat(), 0, 0, ORIGIN.lat, ORIGIN.lng, 0) === null);
+  const chediMesh = generateTowers([{ id: 'c', ...at(30, 30), width: 10, tags: { man_made: 'tower', 'tower:type': 'pagoda' } }], flat(), 0, 0, ORIGIN.lat, ORIGIN.lng, 0);
+  check('a chedi gets a mesh of its height', chediMesh.children.some((m) => m.userData.tower === 'chedi' && (m.geometry.computeBoundingBox(), near(m.geometry.boundingBox.max.y, 23, 1))));
   check('towers get a mesh and a collider', tgroup.children.length >= 1 && tgroup.userData.body.shapes.length === 1);
 }
 

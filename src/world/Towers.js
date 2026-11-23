@@ -10,6 +10,8 @@ import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { latLngToMeters } from '../data/GeoUtils.js';
 import { getElevationAt } from './ElevationUtils.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { chediGeometry } from './ThaiTemple.js';
 
 const ORANGE = new THREE.Color(0xd4502a);
 const WHITE = new THREE.Color(0xe8e6e0);
@@ -25,7 +27,7 @@ const beaconMaterial = new THREE.MeshBasicMaterial({ color: 0xff2010 });
  * @param {{ tags: object, width?: number }} tower  width = footprint size (0 for a node)
  * @returns {{ shape: 'lattice'|'mast'|'tvtower'|'chimney'|'water'|'block', height: number, base: number, banded: boolean }}
  */
-export function towerSpec(tower) {
+export function towerSpec(tower, tropical = false) {
   const t = tower.tags;
   const width = tower.width || 0;
   const tagged = parseFloat(t.height);
@@ -33,14 +35,16 @@ export function towerSpec(tower) {
   const kind = t.man_made;
 
   let shape = 'block';
-  if (kind === 'mast') shape = 'mast';
+  if (type === 'lighting') shape = 'pole'; // floodlight mast at a stadium or junction, not a radio mast
+  else if (type === 'pagoda' && tropical) shape = 'chedi';
+  else if (kind === 'mast') shape = 'mast';
   else if (kind === 'chimney') shape = 'chimney';
   else if (kind === 'water_tower') shape = 'water';
   else if (kind === 'communications_tower') shape = t['tower:construction'] === 'lattice' ? 'lattice' : 'tvtower';
   else if (t['tower:construction'] === 'lattice' || (type === 'communication' && width >= 20)) shape = 'lattice';
   else if (type === 'communication') shape = 'mast';
 
-  const fallback = { lattice: 120, mast: 60, tvtower: 150, chimney: 50, water: 25, block: type === 'observation' ? 30 : 18 }[shape];
+  const fallback = { lattice: 120, mast: 60, tvtower: 150, chimney: 50, water: 25, pole: 25, chedi: width > 0 ? Math.min(Math.max(8, width * 2.3), 90) : 12, block: type === 'observation' ? 30 : 18 }[shape];
   let height = tagged > 0 ? tagged : fallback;
   // shortcut: a big lattice tower whose outline is also a building is often tagged with the height
   // of the building between its legs (Tokyo Tower says 21 m); such towers stand ~3.8x their base.
@@ -48,7 +52,7 @@ export function towerSpec(tower) {
   if (shape === 'lattice' && width >= 20 && height < 2 * width) height = Math.min(3.8 * width, 400);
 
   const base = shape === 'lattice' ? Math.min(Math.max(width / 2, 2), height / 8)
-    : shape === 'mast' ? 1
+    : shape === 'mast' || shape === 'pole' ? 1
     : shape === 'water' ? Math.max(4, Math.min(width / 2, 12))
     : Math.max(width / 2, shape === 'chimney' ? 2 : 3);
   return { shape, height, base, banded: (shape === 'lattice' || shape === 'mast') && height >= 45 };
@@ -100,6 +104,9 @@ export function towerGeometry(spec) {
     parts.push(new THREE.CylinderGeometry(0.25, Math.max(0.5, b * 0.04), h * 0.18, 6).translate(0, h * 0.91, 0));
   } else if (shape === 'mast') {
     latticeSection(parts, b, b * 0.7, 0, h, 3, 0.18, 4);
+  } else if (shape === 'pole') {
+    parts.push(new THREE.CylinderGeometry(0.22, 0.4, h, 8).translate(0, h / 2, 0));
+    parts.push(new THREE.BoxGeometry(3, 1.2, 0.6).translate(0, h, 0)); // floodlight head
   } else if (shape === 'tvtower') {
     parts.push(new THREE.CylinderGeometry(b * 0.45, b, h * 0.75, 16).translate(0, h * 0.375, 0));
     parts.push(new THREE.CylinderGeometry(b * 1.6, b * 1.1, h * 0.06, 20).translate(0, h * 0.68, 0)); // pod
@@ -174,10 +181,11 @@ export function generateTowers(towers, elevationData, chunkWorldX, chunkWorldZ, 
   const body = new CANNON.Body({ mass: 0 });
   for (const tower of towers) {
     if (/roof/.test(tower.tags.location ?? '')) continue; // antennas on a roof are not drawn standing on the ground
-    const spec = towerSpec(tower);
+    const spec = towerSpec(tower, Math.abs(originLat) < 25);
     const { x, z } = latLngToMeters(tower.lat, tower.lon, originLat, originLng);
     const y = getElevationAt(x - chunkWorldX, z - chunkWorldZ, elevationData, base);
-    const mesh = new THREE.Mesh(towerGeometry(spec), material);
+    const geometry = spec.shape === 'chedi' ? mergeGeometries(chediGeometry(spec.height)) : towerGeometry(spec);
+    const mesh = new THREE.Mesh(geometry, material);
     mesh.userData.sharedMaterial = true;
     mesh.userData.tower = spec.shape;
     mesh.position.set(x, y, z);
