@@ -14,7 +14,7 @@ import { generateTerrain } from '../src/world/TerrainGenerator.js';
 import { generateRoads } from '../src/world/RoadGenerator.js';
 import { generateBuildings } from '../src/world/BuildingGenerator.js';
 import { generateWater } from '../src/world/WaterGenerator.js';
-import { placeVegetation } from '../src/world/VegetationPlacer.js';
+import { placeVegetation, pickSpecies } from '../src/world/VegetationPlacer.js';
 import { getElevationAt } from '../src/world/ElevationUtils.js';
 import { metersToLatLng } from '../src/data/GeoUtils.js';
 import { parseOsmXml, findSpawnPoint, landcoverType } from '../src/data/OSMFetcher.js';
@@ -30,7 +30,9 @@ import { buildingHeight, pitchedRoof } from '../src/world/BuildingGenerator.js';
 import { signalState, signalHeads, CYCLE_SECONDS } from '../src/world/TrafficLights.js';
 import { TrafficManager } from '../src/world/Traffic.js';
 import { isLeftHandTraffic } from '../src/data/DrivingSide.js';
-import { lightingAt } from '../src/world/DayNight.js';
+import { lightingAt, sunDirection, solarHourNow } from '../src/world/DayNight.js';
+import { weatherFromApi, weatherIcon } from '../src/world/Weather.js';
+const RAD_DEG = Math.PI / 180;
 
 let failures = 0;
 function check(name, ok, detail = '') {
@@ -182,6 +184,21 @@ section('Checkpoint mission and day/night');
   check('checkpoints land only on drivable roads inside the 150-450 m band', picks.every((p) => p && near(p.x, 300, 1) && near(p.z, 0, 1)));
   check('no checkpoint when no road is in range', pickCheckpoint(roads, ORIGIN.lat, ORIGIN.lng, { x: 5000, z: 5000 }) === null);
 
+  // Real sun: Bangsaen (13.3° N) on 23 November stands ~56° up in the south at noon, rises in the east
+  const nov23 = sunDirection(12, 13.28, 327), morning = sunDirection(8, 13.28, 327);
+  const noonUp = Math.asin(nov23.y) / RAD_DEG;
+  check('noon sun at Bangsaen in November is ~56° up, due south', near(noonUp, 56.5, 1.5) && nov23.z > 0.5 && Math.abs(nov23.x) < 0.01, `${noonUp.toFixed(1)}°`);
+  check('morning sun is in the east, low', morning.x > 0.6 && morning.y > 0 && morning.y < 0.6);
+  check('London in December gets a low winter sun (~15°)', near(Math.asin(sunDirection(12, 51.5, 355).y) / RAD_DEG, 15, 1.5));
+  check('local solar time follows longitude (Bangkok is ~UTC+6:43 solar)', near(solarHourNow(100.5, new Date(Date.UTC(2026, 0, 1, 5, 0))), 11.7, 0.05));
+
+  // Live weather: Open-Meteo values become cloud, rain and wind for the renderer
+  const overcast = weatherFromApi({ cloud_cover: 100, precipitation: 0, weather_code: 3, wind_speed_10m: 7, temperature_2m: 30.7 });
+  const storm = weatherFromApi({ cloud_cover: 95, precipitation: 6, weather_code: 95, wind_speed_10m: 60 });
+  check('weather: overcast is dry and grey, a storm rains hard with strong wind',
+    overcast.cloud === 1 && overcast.rain === 0 && weatherIcon(overcast) === '☁️' && storm.rain === 1 && storm.wind === 1 && weatherIcon(storm) === '⛈️');
+  check('weather: missing data means clear and calm, not a crash', weatherFromApi(undefined).cloud === 0 && weatherFromApi(undefined).rain === 0);
+
   const noon = lightingAt(12), midnight = lightingAt(0), dusk = lightingAt(18.2);
   check('noon is full daylight, midnight is dark', noon.daylight > 0.99 && midnight.daylight === 0, `noon ${noon.daylight.toFixed(2)}, midnight ${midnight.daylight.toFixed(2)}`);
   check('sky is blue at noon, dark at midnight, orange-ish at dusk', noon.sky.b > noon.sky.r && midnight.sky.getHSL({}).l < 0.15 && dusk.sky.r > dusk.sky.b);
@@ -207,6 +224,8 @@ section('Realistic city: markings, lamps, building heights');
   check('OSM height and levels win over the guess', buildingHeight({ tags: { height: '42' } }) === 42 && buildingHeight({ tags: { 'building:levels': '10' } }) === 30);
   const guessed = new Set(Array.from({ length: 40 }, (_, id) => buildingHeight({ id, tags: { building: 'yes' } })));
   check('untagged buildings get varied heights (2-5 floors), not one flat slab', guessed.size === 4 && Math.min(...guessed) === 6 && Math.max(...guessed) === 15, [...guessed].join(','));
+  const ovHeights = new Set(['ov_1972641f-316b', 'ov_08b2c4d1-aa01', 'ov_5f00e1b2-77c3', 'ov_c3d4e5f6-0912', 'ov_7a7a7a7a-1234', 'ov_0000ffff-9999'].map((id) => buildingHeight({ id, tags: { building: 'yes' } })));
+  check('Overture buildings (text ids) also get varied heights, not all 2 floors', ovHeights.size >= 3, [...ovHeights].join(','));
   check('checkpoint pace is seconds per km', paceSecondsPerKm(30, 300) === 100);
 
   // Bug: car drove straight through lamp posts
@@ -357,14 +376,26 @@ section('OSM parsing and spawn point');
     parseOsmXml(relXml('<member type="way" ref="999" role="outer"/>')).partial[0]?.id === '40');
 
   const trees = [0, 1].map((cx) => placeVegetation([forest], flat(), cx * CHUNK_SIZE, 0, ORIGIN.lat, ORIGIN.lng, 0));
-  const pts = [];
-  for (const g of trees) {
-    const inst = g?.children[0];
-    for (let i = 0; i < (inst?.count || 0); i++) pts.push(new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().fromArray(inst.instanceMatrix.array, i * 16)));
-  }
+  const treePoints = (g) => (g?.children || []).flatMap((inst) => Array.from({ length: inst.count }, (_, i) => ({
+    p: new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().fromArray(inst.instanceMatrix.array, i * 16)), kind: inst.userData.species })));
+  const pts = trees.flatMap(treePoints).map((t) => t.p);
+  const counts = trees.map((g) => treePoints(g).length);
   check('trees fill a big forest in every chunk, but none in its clearing',
-    trees.every((g) => g?.children[0].count >= 100) && !pts.some((p) => Math.abs(p.x) < 19 && Math.abs(p.z) < 19),
-    trees.map((g) => g?.children[0].count).join(' + ') + ' trees');
+    counts.every((n) => n >= 100) && !pts.some((p) => Math.abs(p.x) < 19 && Math.abs(p.z) < 19), counts.join(' + ') + ' trees');
+
+  // Realism: a road through the forest stays clear, the tropics get palms and rain trees, OSM street trees are planted
+  const lane = { tags: { highway: 'primary' }, geometry: [at(-300, 50), at(300, 50)] };
+  const nearRoad = treePoints(placeVegetation([forest], flat(), 0, 0, ORIGIN.lat, ORIGIN.lng, 0, { roads: [lane] })).filter((t) => Math.abs(t.p.z - 50) < 8);
+  check('no tree grows on a road through a forest', nearRoad.length === 0, `${nearRoad.length} trees within 8 m of the road`);
+  const park = { id: 'p', tags: { leisure: 'park' }, geometry: [...ring, ring[0]] };
+  const thai = new Set(treePoints(placeVegetation([park], flat(), 0, 0, ORIGIN.lat, ORIGIN.lng, 0)).map((t) => t.kind));
+  const london = new Set(Array.from({ length: 100 }, (_, i) => pickSpecies({ leisure: 'park' }, false, i / 100)));
+  check('a Thai park gets palms and rain trees; a London park gets no palms', thai.has("palm") && thai.has("rainTree") && !london.has('palm') && !london.has('rainTree'), `${[...thai]} / ${[...london]}`);
+  const street = parseOsmXml(`<osm><node id="1" lat="13.2836" lon="100.9268"><tag k="natural" v="tree"/><tag k="genus" v="Cocos"/></node>
+    <node id="2" lat="13.2836" lon="100.9270"/><node id="3" lat="13.2836" lon="100.9280"/><way id="5"><nd ref="2"/><nd ref="3"/><tag k="natural" v="tree_row"/></way></osm>`);
+  const planted = treePoints(placeVegetation([], flat(), 0, 0, ORIGIN.lat, ORIGIN.lng, 0, { trees: street.trees }));
+  check('OSM street trees are planted (a coconut is a palm, a 108 m tree row gets ~12 trees)',
+    planted.find((t) => Math.hypot(t.p.x, t.p.z) < 1)?.kind === 'palm' && near(street.trees.length - 1, 12, 1), `${street.trees.length} trees parsed`);
 
   const bigLake = { tags: { natural: 'water' }, geometry: [...ring, ring[0]], holes: [hole] };
   const pieces = [0, 1].map((cx) => generateWater([bigLake], cx * CHUNK_SIZE, 0, ORIGIN.lat, ORIGIN.lng));

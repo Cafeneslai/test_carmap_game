@@ -132,10 +132,25 @@ function classify(element, out) {
   const tags = element.tags;
   if (element.type === 'node') {
     if (tags?.highway === 'traffic_signals') out.signals.push({ id: element.id, lat: element.lat, lon: element.lon });
+    if (tags?.natural === 'tree') out.trees.push({ id: element.id, lat: element.lat, lon: element.lon, tags: { genus: tags.genus, species: tags.species, leaf_type: tags.leaf_type, height: tags.height } });
     return;
   }
   const geom = element.geometry;
   if (!tags || !geom) return;
+
+  // A row of street trees: one tree every 9 m along the line
+  if (tags.natural === 'tree_row' && geom.length >= 2) {
+    for (let i = 0; i < geom.length - 1; i++) {
+      const a = geom[i], b = geom[i + 1];
+      const len = latLngToMeters(b.lat, b.lon, a.lat, a.lon);
+      const n = Math.max(1, Math.round(Math.hypot(len.x, len.z) / 9));
+      for (let k = 0; k < n; k++) {
+        const t = k / n;
+        out.trees.push({ id: `${element.id}_${i}_${k}`, lat: a.lat + (b.lat - a.lat) * t, lon: a.lon + (b.lon - a.lon) * t, tags: {} });
+      }
+    }
+    return;
+  }
 
   // What covers the ground (fields, beach, parking...) is painted onto the terrain; it is an extra
   // category, so a forest is both painted and planted with trees
@@ -173,10 +188,20 @@ export function parseOsmXml(xml) {
   // ([^>]*[^/]> skips self-closing <node .../> so a match never runs on into the next node)
   const taggedNodeRegex = /<node id="(\d+)"([^>]*[^/])>([\s\S]*?)<\/node>/g;
   while ((match = taggedNodeRegex.exec(xml)) !== null) {
-    if (!/<tag k="highway" v="traffic_signals"\s*\/>/.test(match[3])) continue;
+    const signal = /<tag k="highway" v="traffic_signals"\s*\/>/.test(match[3]);
+    const tree = /<tag k="natural" v="tree"\s*\/>/.test(match[3]);
+    if (!signal && !tree) continue;
     const lat = /lat="([^"]+)"/.exec(match[2]);
     const lon = /lon="([^"]+)"/.exec(match[2]);
-    if (lat && lon) out.signals.push({ id: match[1], lat: parseFloat(lat[1]), lon: parseFloat(lon[1]) });
+    if (!lat || !lon) continue;
+    const point = { id: match[1], lat: parseFloat(lat[1]), lon: parseFloat(lon[1]) };
+    if (signal) out.signals.push(point);
+    if (tree) {
+      // Street/garden tree: keep what says which species it is and how tall
+      const tags = {};
+      for (const [, k, v] of match[3].matchAll(/<tag k="(genus|species|taxon|leaf_type|height)" v="([^"]*)"\s*\/>/g)) tags[k] = v;
+      out.trees.push({ ...point, tags });
+    }
   }
 
   const wayGeometry = new Map(); // every way, tagged or not: relation outlines are mostly untagged ways
@@ -224,7 +249,7 @@ export function parseOsmXml(xml) {
 }
 
 function emptyParsed() {
-  return { roads: [], buildings: [], water: [], greenery: [], signals: [], landcover: [], partial: [] };
+  return { roads: [], buildings: [], water: [], greenery: [], signals: [], landcover: [], trees: [], partial: [] };
 }
 
 function merge(parts) {
@@ -334,7 +359,7 @@ async function completeRelations(parsed) {
 
 async function fetchOverpassBox(bbox) {
   const b = bboxToOverpass(bbox);
-  const query = `[out:json][timeout:8];(way["highway"](${b});way["building"](${b});way["natural"="water"](${b});way["waterway"](${b});way["landuse"~"forest|grass"](${b});way["leisure"~"park|garden"](${b});node["highway"="traffic_signals"](${b});way["landuse"](${b});way["natural"~"wood|scrub|grassland|heath|beach|sand|bare_rock|scree|wetland|mud"](${b});way["leisure"~"pitch|golf_course|playground|sports_centre|stadium|track"](${b});way["amenity"~"parking|school|university|hospital|college"](${b});rel["type"="multipolygon"]["natural"~"water|wood|scrub|grassland|heath|beach|sand|wetland"](${b});rel["type"="multipolygon"]["landuse"](${b});rel["type"="multipolygon"]["leisure"~"park|garden|golf_course"](${b}););out geom;`;
+  const query = `[out:json][timeout:8];(way["highway"](${b});way["building"](${b});way["natural"="water"](${b});way["waterway"](${b});way["landuse"~"forest|grass"](${b});way["leisure"~"park|garden"](${b});node["highway"="traffic_signals"](${b});node["natural"="tree"](${b});way["natural"="tree_row"](${b});way["landuse"](${b});way["natural"~"wood|scrub|grassland|heath|beach|sand|bare_rock|scree|wetland|mud"](${b});way["leisure"~"pitch|golf_course|playground|sports_centre|stadium|track"](${b});way["amenity"~"parking|school|university|hospital|college"](${b});rel["type"="multipolygon"]["natural"~"water|wood|scrub|grassland|heath|beach|sand|wetland"](${b});rel["type"="multipolygon"]["landuse"](${b});rel["type"="multipolygon"]["leisure"~"park|garden|golf_course"](${b}););out geom;`;
 
   for (let attempt = 0; attempt < OVERPASS_ENDPOINTS.length; attempt++) {
     const index = (overpassIndex + attempt) % OVERPASS_ENDPOINTS.length;
@@ -394,8 +419,11 @@ function selectForChunk(parsed, bbox) {
     const lon = (el.bounds.minLon + el.bounds.maxLon) / 2;
     return lat >= bbox.south && lat < bbox.north && lon >= bbox.west && lon < bbox.east;
   });
-  const signals = (parsed.signals || []).filter((n) => n.lat >= bbox.south && n.lat < bbox.north && n.lon >= bbox.west && n.lon < bbox.east);
-  return { roads, buildings, water, greenery, signals, landcover };
+  // Points (signals, single trees) belong to exactly one chunk
+  const inChunk = (n) => n.lat >= bbox.south && n.lat < bbox.north && n.lon >= bbox.west && n.lon < bbox.east;
+  const signals = (parsed.signals || []).filter(inChunk);
+  const trees = (parsed.trees || []).filter(inChunk);
+  return { roads, buildings, water, greenery, signals, landcover, trees };
 }
 
 function containsBox(outer, inner) {

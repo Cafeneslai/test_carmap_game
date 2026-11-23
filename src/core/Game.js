@@ -13,9 +13,11 @@ import { CameraController } from '../vehicle/CameraController.js';
 import { EngineSound } from '../vehicle/EngineSound.js';
 import { Mission } from './Mission.js';
 import { DayNight } from '../world/DayNight.js';
+import { Weather } from '../world/Weather.js';
 import { setNightLevel } from '../world/NightLights.js';
 import { updateTrafficLights } from '../world/TrafficLights.js';
 import { TrafficManager } from '../world/Traffic.js';
+import { windUniforms } from '../world/VegetationPlacer.js';
 import { LocationPicker } from '../ui/LocationPicker.js';
 import { LoadingScreen } from '../ui/LoadingScreen.js';
 import { HUD } from '../ui/HUD.js';
@@ -57,7 +59,7 @@ export class Game {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.2;
+    this.renderer.toneMappingExposure = 1.0; // the sky now adds image-based light on top of sun + ambient
 
     // ---- Lighting ----
     this._setupLighting();
@@ -126,7 +128,8 @@ export class Game {
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
 
-    this.dayNight = new DayNight({ scene: this.scene, sun: this.sunLight, ambient, hemi });
+    this.dayNight = new DayNight({ scene: this.scene, sun: this.sunLight, ambient, hemi, renderer: this.renderer, camera: this.camera });
+    this.weather = new Weather(this.scene, this.dayNight);
   }
 
   // ---- Public methods called by UI ----
@@ -138,6 +141,8 @@ export class Game {
   async startGame(location) {
     this.selectedLocation = location;
     this.state = GAME_STATES.LOADING;
+    this.dayNight.setLocation(location.lat, location.lng);
+    this.weather.setLocation(location.lat, location.lng);
     this.engineSound.start(); // still inside the Start click, so the browser allows audio
 
     // Show loading screen
@@ -317,15 +322,17 @@ export class Game {
       this.chunkManager.update(pos);
 
       // Sun, sky and headlights follow the time of day
+      this.weather.update(delta, this.camera); // sets cloud/rain on dayNight before it lights the scene
       this.dayNight.update(delta, pos);
       if (this.headlight) this.headlight.intensity = 40 * (1 - this.dayNight.daylight);
       setNightLevel(1 - this.dayNight.daylight); // windows, street lamps
 
       // Traffic lights and NPC cars share one clock so cars obey what the lights show
       this.gameTime += delta;
+      windUniforms.uTime.value = this.gameTime; // trees sway
       updateTrafficLights(this.gameTime);
       this.traffic?.update(delta, pos, this.gameTime);
-      this.hud.updateClock(this.dayNight.clock);
+      this.hud.updateClock(`${this.dayNight.clock} ${this.weather.label}`.trim());
 
       // Checkpoint run
       if (this.mission) {

@@ -90,7 +90,7 @@ export function generateBuildings(buildings, elevationData, chunkWorldX, chunkWo
 
       // Pick a color for this building
       // Deterministic per building so a building drawn by two chunks never flickers
-      const colorHex = BUILDING_COLORS[Math.abs(Number(building.id) || 0) % BUILDING_COLORS.length];
+      const colorHex = BUILDING_COLORS[idNumber(building.id) % BUILDING_COLORS.length];
       const color = new THREE.Color(colorHex);
 
       // Add vertex colors; roofs get a UV on the plain part of the window texture
@@ -172,8 +172,20 @@ export function buildingHeight(building) {
   if (tags.building === 'house' || tags.building === 'detached' || tags.building === 'garage' || tags.building === 'shed') {
     return tags.building === 'garage' || tags.building === 'shed' ? METERS_PER_FLOOR : 2 * METERS_PER_FLOOR;
   }
-  const id = Math.abs(Number(building.id) || 0);
+  const id = idNumber(building.id);
   return (2 + ((id * 7919) % 4)) * METERS_PER_FLOOR || DEFAULT_BUILDING_HEIGHT;
+}
+
+/**
+ * A stable number from a building id, for picking colours and guessed heights. OSM ids are numbers;
+ * Overture ids ("ov_1972641f-...") are hashed, before they all came out NaN -> 0: same colour, 2 floors.
+ */
+export function idNumber(id) {
+  const n = Number(id);
+  if (Number.isFinite(n)) return Math.abs(n);
+  let h = 2166136261;
+  for (const ch of String(id)) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+  return h >>> 0;
 }
 
 const COLLIDER_CELL = 2; // metres; strips this wide follow the outline of L/U/odd-shaped buildings
@@ -305,7 +317,7 @@ export function pitchedRoof(building, points, topY) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   geometry.computeVertexNormals();
-  const [cr, cg, cb] = ROOF_COLORS[Math.abs(Number(building.id) || 0) % ROOF_COLORS.length];
+  const [cr, cg, cb] = ROOF_COLORS[idNumber(building.id) % ROOF_COLORS.length];
   const count = pos.length / 3;
   geometry.setAttribute('color', new THREE.Float32BufferAttribute(new Array(count).fill([cr, cg, cb]).flat(), 3));
   geometry.setAttribute('uv', new THREE.Float32BufferAttribute(new Array(count * 2).fill(PLAIN_UV), 2));

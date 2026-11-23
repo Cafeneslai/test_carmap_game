@@ -22,6 +22,8 @@ export class SettingsPanel {
     this.soundCheckbox = document.getElementById('setting-sound');
     this.dayNightCheckbox = document.getElementById('setting-daynight');
     this.trafficCheckbox = document.getElementById('setting-traffic');
+    this.satelliteCheckbox = document.getElementById('setting-satellite');
+    this.weatherCheckbox = document.getElementById('setting-weather');
     this.resetBtn = document.getElementById('btn-reset-location');
     this.closeBtn = document.getElementById('btn-close-settings');
 
@@ -43,10 +45,12 @@ export class SettingsPanel {
     if (typeof saved.sound === 'boolean') this.soundCheckbox.checked = saved.sound;
     if (typeof saved.dayNight === 'boolean') this.dayNightCheckbox.checked = saved.dayNight;
     if (typeof saved.traffic === 'boolean') this.trafficCheckbox.checked = saved.traffic;
+    if (typeof saved.satellite === 'boolean') this.satelliteCheckbox.checked = saved.satellite;
+    if (typeof saved.weather === 'boolean') this.weatherCheckbox.checked = saved.weather;
 
     // Run the normal handlers so the renderer matches the panel (it starts at "high" otherwise)
     this.viewDistanceSlider.dispatchEvent(new Event('input'));
-    for (const el of [this.qualitySelect, this.shadowsCheckbox, this.treesCheckbox, this.soundCheckbox, this.dayNightCheckbox, this.trafficCheckbox]) {
+    for (const el of [this.qualitySelect, this.shadowsCheckbox, this.treesCheckbox, this.soundCheckbox, this.dayNightCheckbox, this.trafficCheckbox, this.satelliteCheckbox, this.weatherCheckbox]) {
       el.dispatchEvent(new Event('change'));
     }
   }
@@ -61,6 +65,8 @@ export class SettingsPanel {
         sound: this.soundCheckbox.checked,
         dayNight: this.dayNightCheckbox.checked,
         traffic: this.trafficCheckbox.checked,
+        satellite: this.satelliteCheckbox.checked,
+        weather: this.weatherCheckbox.checked,
       }));
     } catch {
       // private mode / storage full: settings just won't persist
@@ -122,8 +128,18 @@ export class SettingsPanel {
       if (this.game.traffic) this.game.traffic.enabled = this.trafficCheckbox.checked;
     });
 
+    // Aerial imagery on the ground (chunks built from now on)
+    this.satelliteCheckbox.addEventListener('change', () => {
+      if (this.game.chunkManager) this.game.chunkManager.worldBuilder.satelliteEnabled = this.satelliteCheckbox.checked;
+    });
+
+    // Live weather (off = clear skies)
+    this.weatherCheckbox.addEventListener('change', () => {
+      this.game.weather.enabled = this.weatherCheckbox.checked;
+    });
+
     // Persist every change
-    for (const el of [this.viewDistanceSlider, this.qualitySelect, this.shadowsCheckbox, this.treesCheckbox, this.soundCheckbox, this.dayNightCheckbox, this.trafficCheckbox]) {
+    for (const el of [this.viewDistanceSlider, this.qualitySelect, this.shadowsCheckbox, this.treesCheckbox, this.soundCheckbox, this.dayNightCheckbox, this.trafficCheckbox, this.satelliteCheckbox, this.weatherCheckbox]) {
       el.addEventListener('change', () => this._save());
     }
 
@@ -143,6 +159,7 @@ export class SettingsPanel {
   applyTo(chunkManager) {
     chunkManager.setViewDistance(parseInt(this.viewDistanceSlider.value));
     chunkManager.setTreesEnabled(this.treesCheckbox.checked);
+    chunkManager.worldBuilder.satelliteEnabled = this.satelliteCheckbox.checked;
   }
 
   show() {

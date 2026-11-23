@@ -83,6 +83,10 @@ export const NOMINATIM_API = 'https://nominatim.openstreetmap.org/search';
 export const OSM_MAP_API = 'https://api.openstreetmap.org/api/0.6/map';
 // Open building footprints (OSM + Google + Microsoft) fill the gaps where OSM has no buildings
 export const OVERTURE_CATALOG = 'https://stac.overturemaps.org/catalog.json';
+// Free aerial imagery for the ground (attribution: Esri, Maxar, Earthstar Geographics)
+export const SATELLITE_TILES = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+// Free current weather, no API key
+export const WEATHER_API = 'https://api.open-meteo.com/v1/forecast';
 
 // ====== Map tiles (first = primary, rest = fallbacks used when tiles fail to load) ======
 // CARTO basemaps now return an "API KEY REQUIRED" watermark, so they are not used.

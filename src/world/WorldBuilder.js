@@ -16,10 +16,11 @@ import { generateStreetLamps } from './StreetLamps.js';
 import { generateTrafficLights } from './TrafficLights.js';
 import { isLeftHandTraffic } from '../data/DrivingSide.js';
 import { paintGround, getGroundDetailTexture } from './GroundPainter.js';
+import { satelliteGround } from './SatelliteGround.js';
 
 // Bump when the shape or orientation of cached data changes. v3: elevation comes from the shared
 // world lattice (ElevationField), rows run north->south, buildings belong to a single chunk.
-const CACHE_VERSION = 'v7'; // v7: Overture buildings where OSM has none; v6: multipolygon relations (big forests, lakes with islands); v5: landcover; v4: signals
+const CACHE_VERSION = 'v8'; // v8: OSM street trees (natural=tree, tree_row); v7: Overture buildings where OSM has none; v6: multipolygon relations (big forests, lakes with islands); v5: landcover; v4: signals
 
 function flatGrid() {
   return Array.from({ length: TERRAIN_RESOLUTION }, () => new Array(TERRAIN_RESOLUTION).fill(0));
@@ -35,6 +36,7 @@ export class WorldBuilder {
     this.originLng = originLng;
     this.originBaseElevation = null;
     this.treesEnabled = true;
+    this.satelliteEnabled = true;
     this.elevation = new ElevationField(originLat, originLng);
     this.leftHand = isLeftHandTraffic(originLat, originLng);
   }
@@ -91,9 +93,11 @@ export class WorldBuilder {
   async buildChunk(chunk, scene, physicsWorld) {
     const bbox = chunk.getBBox();
 
-    const [osmData, elevationData] = await Promise.all([
+    // Aerial imagery downloads alongside the map data; without it the land cover is painted
+    const [osmData, elevationData, satellite] = await Promise.all([
       this._loadOsm(chunk, bbox),
       this._loadElevation(chunk),
+      this.satelliteEnabled ? satelliteGround(chunk.worldX, chunk.worldZ, this.originLat, this.originLng) : null,
     ]);
 
     chunk.osmData = osmData;
@@ -108,7 +112,7 @@ export class WorldBuilder {
     const { originLat, originLng } = this;
 
     // 1. Terrain (+ physics heightfield)
-    const ground = paintGround(osmData.landcover, chunk.worldX, chunk.worldZ, originLat, originLng);
+    const ground = satellite || paintGround(osmData.landcover, chunk.worldX, chunk.worldZ, originLat, originLng);
     const terrain = generateTerrain(elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base, ground, getGroundDetailTexture());
     if (terrain.mesh) chunk.meshGroup.add(terrain.mesh);
     if (terrain.body) {
@@ -150,8 +154,8 @@ export class WorldBuilder {
     }
 
     // 5. Vegetation
-    if (osmData.greenery.length > 0) {
-      const trees = placeVegetation(osmData.greenery, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base);
+    if (osmData.greenery.length > 0 || osmData.trees?.length > 0) {
+      const trees = placeVegetation(osmData.greenery, elevationData, chunk.worldX, chunk.worldZ, originLat, originLng, base, osmData);
       if (trees) {
         trees.name = 'vegetation';
         trees.visible = this.treesEnabled;

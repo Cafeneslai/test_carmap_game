@@ -139,7 +139,7 @@ export function generateRoads(roads, elevationData, chunkWorldX, chunkWorldZ, or
 const MAJOR_ROADS = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary']);
 const MINOR_MARKED = new Set(['residential', 'unclassified', 'living_street']);
 const WHITE = [0.92, 0.92, 0.9];
-const SIDEWALK = [0.6, 0.6, 0.58];
+const SIDEWALK = [0.34, 0.33, 0.31]; // linear: sun-bleached concrete, not white
 const SIDEWALK_WIDTH = 2;
 const JUNCTION_CLEAR = 9; // metres either side of a junction kept free of lines and sidewalks
 
@@ -328,9 +328,9 @@ function mergeBufferGeometries(geometries) {
     } else if (colors) {
       // Default color: dark gray (road surface)
       for (let i = 0; i < posAttr.count; i++) {
-        colors[(vertexOffset + i) * 3] = 0.2;
-        colors[(vertexOffset + i) * 3 + 1] = 0.2;
-        colors[(vertexOffset + i) * 3 + 2] = 0.22;
+        colors[(vertexOffset + i) * 3] = 0.07;
+        colors[(vertexOffset + i) * 3 + 1] = 0.07;
+        colors[(vertexOffset + i) * 3 + 2] = 0.078;
       }
     }
 
